@@ -111,11 +111,12 @@ export async function focusSession(info: TerminalInfo): Promise<void> {
     await execPlatform("tmux", ["select-pane", "-t", info.tmux.paneId], { timeout: PROCESS_TIMEOUT_MS });
   }
 
-  // On Windows, try to bring Windows Terminal to foreground via PowerShell
+  // On Windows, bring Windows Terminal to foreground
   if (isWindows) {
     try {
+      // Find WindowsTerminal.exe PID and activate its window by PID
       await execFileAsync("powershell", ["-NoProfile", "-Command",
-        `(New-Object -ComObject WScript.Shell).AppActivate('Windows Terminal')`
+        `$wt = Get-Process WindowsTerminal -ErrorAction SilentlyContinue | Select-Object -First 1; if ($wt) { (New-Object -ComObject WScript.Shell).AppActivate($wt.Id) }`
       ], { timeout: 5000 });
     } catch {
       // Best effort — window activation may fail
