@@ -60,13 +60,21 @@ function execPlatform(
  * On Windows, uses PowerShell to get native process info.
  * Returns a Map keyed by PID.
  */
+// Track which PIDs came from WSL (needed for tmux interaction)
+const wslPids = new Set<number>();
+
+export function isWslProcess(pid: number): boolean {
+  return wslPids.has(pid);
+}
+
 export async function buildProcessTree(): Promise<Map<number, ProcessTreeEntry>> {
   const tree = new Map<number, ProcessTreeEntry>();
 
   if (isWindows) {
-    // On Windows, use PowerShell to get native process info
-    try {
-      const { stdout } = await execFileAsync(
+    // Scan BOTH native Windows processes AND WSL processes in parallel
+    const [nativeResult, wslResult] = await Promise.allSettled([
+      // Native Windows processes via PowerShell
+      execFileAsync(
         "powershell",
         [
           "-NoProfile",
@@ -74,8 +82,16 @@ export async function buildProcessTree(): Promise<Map<number, ProcessTreeEntry>>
           `Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId)|$($_.ParentProcessId)|0|$($_.Name)" }`,
         ],
         { timeout: PROCESS_TIMEOUT_MS * 2 },
-      );
-      for (const line of stdout.split(/\r?\n/)) {
+      ),
+      // WSL processes via wsl ps
+      execFileAsync("wsl", ["--", "ps", "-eo", "pid,ppid,%cpu,comm"], {
+        timeout: PROCESS_TIMEOUT_MS * 2,
+      }),
+    ]);
+
+    // Parse native Windows processes
+    if (nativeResult.status === "fulfilled") {
+      for (const line of nativeResult.value.stdout.split(/\r?\n/)) {
         const parts = line.trim().split("|");
         if (parts.length >= 4) {
           const pid = parseInt(parts[0], 10);
@@ -88,9 +104,25 @@ export async function buildProcessTree(): Promise<Map<number, ProcessTreeEntry>>
           }
         }
       }
-    } catch {
-      // Fallback: empty tree
     }
+
+    // Parse WSL processes — use negative PID offset to avoid collisions with Windows PIDs
+    // WSL PIDs are prefixed with 10_000_000 to distinguish them
+    if (wslResult.status === "fulfilled") {
+      for (const line of wslResult.value.stdout.split("\n")) {
+        const match = line.trim().match(/^(\d+)\s+(\d+)\s+([\d.,]+)\s+(.+)$/);
+        if (match) {
+          const wslPid = parseInt(match[1], 10) + 10_000_000;
+          wslPids.add(wslPid);
+          tree.set(wslPid, {
+            ppid: parseInt(match[2], 10) + 10_000_000,
+            cpuPercent: parseFloat(match[3].replace(",", ".")) || 0,
+            comm: match[4].trim(),
+          });
+        }
+      }
+    }
+
     return tree;
   }
 

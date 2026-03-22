@@ -4,7 +4,8 @@ import { readdir, stat, open } from "fs/promises";
 import { join } from "path";
 import type { ProcessTreeEntry } from "./terminal/types";
 import { PROCESS_TIMEOUT_MS } from "./constants";
-import { isWindows, resolveClaudeProjectsDir } from "./platform";
+import { isWindows, resolveClaudeProjectsDir, wslExecArgs } from "./platform";
+import { isWslProcess } from "./terminal/detect";
 
 const execFileAsync = promisify(execFile);
 
@@ -22,7 +23,37 @@ export async function getBatchWorkingDirectories(pids: number[]): Promise<Map<nu
   if (pids.length === 0) return result;
 
   if (isWindows) {
-    return getWindowsCwds(pids);
+    // Split PIDs into native Windows and WSL
+    const nativePids = pids.filter((p) => !isWslProcess(p));
+    const wslPidList = pids.filter((p) => isWslProcess(p));
+
+    // Get CWDs for native Windows processes by scanning JSONL files
+    const nativeResult = await getWindowsCwds(nativePids);
+
+    // Get CWDs for WSL processes via wsl lsof
+    if (wslPidList.length > 0) {
+      try {
+        const realPids = wslPidList.map((p) => p - 10_000_000);
+        const { command: cmd, args: cmdArgs } = wslExecArgs(
+          "lsof",
+          ["-p", realPids.join(","), "-Fpn", "-d", "cwd"],
+        );
+        const { stdout } = await execFileAsync(cmd, cmdArgs, { timeout: PROCESS_TIMEOUT_MS });
+        let currentPid: number | null = null;
+        for (const line of stdout.split("\n")) {
+          if (line.startsWith("p")) {
+            currentPid = parseInt(line.slice(1), 10) + 10_000_000; // Add offset back
+          } else if (line.startsWith("n") && currentPid !== null) {
+            nativeResult.set(currentPid, line.slice(1));
+            currentPid = null;
+          }
+        }
+      } catch {
+        /* WSL lsof failed — ignore */
+      }
+    }
+
+    return nativeResult;
   }
 
   try {

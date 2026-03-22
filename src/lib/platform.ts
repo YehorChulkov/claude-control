@@ -95,6 +95,26 @@ export function resolveClaudeControlDir(): string {
   return join(homedir(), ".claude-control");
 }
 
+/**
+ * Resolve WSL Claude projects directory as a Windows UNC path.
+ * Returns null if WSL is not available.
+ */
+let _wslProjectsDir: string | null | undefined = undefined;
+export async function resolveWslClaudeProjectsDir(): Promise<string | null> {
+  if (!isWindows) return null;
+  if (_wslProjectsDir !== undefined) return _wslProjectsDir;
+
+  try {
+    const { stdout } = await execWsl("bash", ["-c", 'echo "$HOME"'], { timeout: 5000 });
+    const wslHome = stdout.trim();
+    _wslProjectsDir = await wslToWindowsPath(wslHome + "/.claude/projects");
+    return _wslProjectsDir;
+  } catch {
+    _wslProjectsDir = null;
+    return null;
+  }
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Native Windows process discovery
 // ────────────────────────────────────────────────────────────────────────────

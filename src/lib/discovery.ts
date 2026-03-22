@@ -2,8 +2,9 @@ import { readdir, stat } from "fs/promises";
 import { join } from "path";
 import { ClaudeSession, ConversationPreview } from "./types";
 import { ProcessInfo, getAllProcessInfos } from "./process-utils";
-import { buildProcessTree, findClaudePidsFromTree } from "./terminal/detect";
+import { buildProcessTree, findClaudePidsFromTree, isWslProcess } from "./terminal/detect";
 import { workingDirToProjectDir, repoNameFromPath, getProjectsDir } from "./paths";
+import { isWindows, resolveWslClaudeProjectsDir } from "./platform";
 import {
   readJsonlTail,
   readJsonlHead,
@@ -145,13 +146,13 @@ async function buildSession(
 }
 
 export async function discoverSessions(): Promise<ClaudeSession[]> {
-  // Single ps call builds the full tree (pid, ppid, %cpu, comm) --
-  // extract claude PIDs and their CPU% from it, then one lsof for cwds
-  const projectsBaseDir = getProjectsDir();
-  const [processTree, hookStatuses, meta] = await Promise.all([
+  // Build process tree (covers both native + WSL on Windows)
+  const nativeProjectsDir = getProjectsDir();
+  const [processTree, hookStatuses, meta, wslProjectsDir] = await Promise.all([
     buildProcessTree(),
     readAllHookStatuses(),
     loadSessionMeta(),
+    isWindows ? resolveWslClaudeProjectsDir() : Promise.resolve(null),
   ]);
   const pids = findClaudePidsFromTree(processTree);
   const processInfos = await getAllProcessInfos(pids, processTree);
@@ -168,7 +169,13 @@ export async function discoverSessions(): Promise<ClaudeSession[]> {
   const results = await Promise.all(
     processInfos
       .filter((info) => info.workingDirectory !== null)
-      .map((info) => buildSession(info, hookStatuses.get(info.pid), claimedPaths, projectsBaseDir)),
+      .map((info) => {
+        // WSL processes use the WSL projects dir, native use the native one
+        const baseDir = isWslProcess(info.pid) && wslProjectsDir
+          ? wslProjectsDir
+          : nativeProjectsDir;
+        return buildSession(info, hookStatuses.get(info.pid), claimedPaths, baseDir);
+      }),
   );
 
   const sessions = results.filter((s): s is ClaudeSession => s !== null);
