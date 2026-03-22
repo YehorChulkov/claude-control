@@ -111,15 +111,33 @@ export async function focusSession(info: TerminalInfo): Promise<void> {
     await execPlatform("tmux", ["select-pane", "-t", info.tmux.paneId], { timeout: PROCESS_TIMEOUT_MS });
   }
 
-  // On Windows, bring Windows Terminal to foreground
+  // On Windows: open a new Windows Terminal tab attached to the tmux session
   if (isWindows) {
-    try {
-      // Find WindowsTerminal.exe PID and activate its window by PID
-      await execFileAsync("powershell", ["-NoProfile", "-Command",
-        `$wt = Get-Process WindowsTerminal -ErrorAction SilentlyContinue | Select-Object -First 1; if ($wt) { (New-Object -ComObject WScript.Shell).AppActivate($wt.Id) }`
-      ], { timeout: 5000 });
-    } catch {
-      // Best effort — window activation may fail
+    if (info.inTmux && info.tmux) {
+      // Open WT tab with wsl tmux attach to the session
+      const distro = await getWslDistro();
+      const distroArg = distro ? ["-d", distro] : [];
+      try {
+        await execFileAsync(
+          "wt.exe",
+          ["-w", "0", "new-tab", "wsl", ...distroArg, "--", "tmux", "attach", "-t", info.tmux.sessionName],
+          { timeout: 5000 },
+        );
+      } catch {
+        // Fallback: just focus WT window
+        try {
+          await execFileAsync("powershell", ["-NoProfile", "-Command",
+            `$wt = Get-Process WindowsTerminal -ErrorAction SilentlyContinue | Select-Object -First 1; if ($wt) { (New-Object -ComObject WScript.Shell).AppActivate($wt.Id) }`
+          ], { timeout: 5000 });
+        } catch { /* best effort */ }
+      }
+    } else {
+      // Non-tmux session: just focus Windows Terminal
+      try {
+        await execFileAsync("powershell", ["-NoProfile", "-Command",
+          `$wt = Get-Process WindowsTerminal -ErrorAction SilentlyContinue | Select-Object -First 1; if ($wt) { (New-Object -ComObject WScript.Shell).AppActivate($wt.Id) }`
+        ], { timeout: 5000 });
+      } catch { /* best effort */ }
     }
     return;
   }
