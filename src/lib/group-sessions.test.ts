@@ -21,6 +21,7 @@ function makeSession(overrides: Partial<ClaudeSession> = {}): ClaudeSession {
       assistantIsNewer: false,
       lastTools: [],
       messageCount: 0,
+      recentMessages: [],
     },
     hasPendingToolUse: false,
     taskSummary: null,

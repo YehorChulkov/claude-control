@@ -205,6 +205,7 @@ export function extractPreview(lines: JsonlLine[]): ConversationPreview {
   let assistantIsNewer = false;
   let lastTools: ToolInfo[] = [];
   let messageCount = 0;
+  const allMessages: { role: "user" | "assistant"; text: string }[] = [];
 
   for (const line of lines) {
     if (line.type === "progress" || line.type === "file-history-snapshot" || line.type === "system") continue;
@@ -220,6 +221,7 @@ export function extractPreview(lines: JsonlLine[]): ConversationPreview {
         assistantIsNewer = false;
         lastTools = [];
         messageCount = 0;
+        allMessages.length = 0;
         continue;
       }
 
@@ -230,6 +232,7 @@ export function extractPreview(lines: JsonlLine[]): ConversationPreview {
           lastUserMessage = cleaned.slice(0, PREVIEW_TEXT_MAX_LENGTH);
           assistantIsNewer = false;
           messageCount++;
+          allMessages.push({ role: "user", text: cleaned.slice(0, PREVIEW_TEXT_MAX_LENGTH) });
         }
         continue;
       }
@@ -237,12 +240,15 @@ export function extractPreview(lines: JsonlLine[]): ConversationPreview {
       lastUserMessage = text.slice(0, PREVIEW_TEXT_MAX_LENGTH);
       assistantIsNewer = false;
       messageCount++;
+      allMessages.push({ role: "user", text: text.slice(0, PREVIEW_TEXT_MAX_LENGTH) });
     } else if (line.type === "assistant" && Array.isArray(line.message.content)) {
       messageCount++;
       const turnTools: ToolInfo[] = [];
+      let assistantText: string | null = null;
       for (const block of line.message.content) {
         if (block.type === "text" && block.text) {
-          lastAssistantText = block.text.slice(0, PREVIEW_TEXT_MAX_LENGTH);
+          assistantText = block.text.slice(0, PREVIEW_TEXT_MAX_LENGTH);
+          lastAssistantText = assistantText;
         }
         if (block.type === "tool_use" && block.name) {
           turnTools.push({
@@ -255,10 +261,16 @@ export function extractPreview(lines: JsonlLine[]): ConversationPreview {
       }
       lastTools = turnTools;
       assistantIsNewer = true;
+      if (assistantText) {
+        allMessages.push({ role: "assistant", text: assistantText });
+      }
     }
   }
 
-  return { lastUserMessage, lastAssistantText, assistantIsNewer, lastTools, messageCount };
+  // Keep last 4 messages for chat-style preview
+  const recentMessages = allMessages.slice(-4);
+
+  return { lastUserMessage, lastAssistantText, assistantIsNewer, lastTools, messageCount, recentMessages };
 }
 
 export function linesToConversation(lines: JsonlLine[]): ConversationMessage[] {

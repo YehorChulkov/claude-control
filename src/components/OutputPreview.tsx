@@ -17,14 +17,28 @@ export function OutputPreview({ preview, status }: { preview: ConversationPrevie
   }
 
   const showTools = preview.lastTools.length > 0 && (status === "working" || status === "waiting");
+  const messages = preview.recentMessages ?? [];
 
   return (
     <div className="space-y-1.5">
-      {preview.lastUserMessage && (
-        <p className="text-xs text-zinc-300 line-clamp-2 leading-relaxed">{preview.lastUserMessage}</p>
-      )}
-      {preview.assistantIsNewer && preview.lastAssistantText && (
-        <p className="text-[11px] text-zinc-500 line-clamp-1 leading-relaxed">{preview.lastAssistantText}</p>
+      {messages.length > 0 ? (
+        <div className="space-y-1">
+          {messages.map((msg, i) => (
+            <div key={i} className="flex gap-1.5 text-xs leading-relaxed">
+              <span className={`shrink-0 font-medium ${msg.role === "user" ? "text-blue-400" : "text-emerald-400"}`}>
+                {msg.role === "user" ? "You:" : "Claude:"}
+              </span>
+              <span className={`line-clamp-1 ${msg.role === "user" ? "text-zinc-300" : "text-zinc-400"}`}>
+                {msg.text}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        /* Fallback to old style if recentMessages not available */
+        preview.lastUserMessage && (
+          <p className="text-xs text-zinc-300 line-clamp-2 leading-relaxed">{preview.lastUserMessage}</p>
+        )
       )}
       {showTools && (
         <div className="flex items-center gap-1.5 text-xs flex-wrap">

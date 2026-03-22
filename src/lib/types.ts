@@ -52,6 +52,8 @@ export interface ConversationPreview {
   assistantIsNewer: boolean;
   lastTools: ToolInfo[];
   messageCount: number;
+  /** Last few messages (user + assistant) for chat-style preview */
+  recentMessages: { role: "user" | "assistant"; text: string }[];
 }
 
 export interface TaskSummary {

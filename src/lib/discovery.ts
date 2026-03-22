@@ -72,6 +72,7 @@ async function buildSession(
     assistantIsNewer: false,
     lastTools: [],
     messageCount: 0,
+    recentMessages: [],
   };
   let hasError = false;
   let askingForInput = false;
