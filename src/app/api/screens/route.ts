@@ -1,12 +1,18 @@
 import { NextResponse } from "next/server";
 import { exec } from "child_process";
 import { promisify } from "util";
+import { isMac } from "@/lib/platform";
 
 const execAsync = promisify(exec);
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
+  // Screen detection via AppleScript is macOS only
+  if (!isMac) {
+    return NextResponse.json({ screens: [] });
+  }
+
   try {
     const script = `
 use framework "AppKit"

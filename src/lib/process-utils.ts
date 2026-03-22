@@ -2,6 +2,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import type { ProcessTreeEntry } from "./terminal/types";
 import { PROCESS_TIMEOUT_MS } from "./constants";
+import { wslExecArgs } from "./platform";
 
 const execFileAsync = promisify(execFile);
 
@@ -12,16 +13,28 @@ export interface ProcessInfo {
 }
 
 /**
+ * Helper to run a command, automatically prefixing with `wsl --` on Windows.
+ */
+function execPlatform(
+  command: string,
+  args: string[],
+  options: { timeout?: number } = {},
+): Promise<{ stdout: string; stderr: string }> {
+  const { command: cmd, args: cmdArgs } = wslExecArgs(command, args);
+  return execFileAsync(cmd, cmdArgs, { ...options, encoding: "utf-8" });
+}
+
+/**
  * Get working directories for multiple PIDs in a single `lsof` call.
  * Uses `-Fpn -d cwd` for parseable output filtered to cwd entries only.
- * Output format: p<pid>\nfcwd\nn<path> per process — `f` lines are
+ * Output format: p<pid>\nfcwd\nn<path> per process -- `f` lines are
  * intentionally skipped since we only need `p` (PID) and `n` (path).
  */
 export async function getBatchWorkingDirectories(pids: number[]): Promise<Map<number, string>> {
   const result = new Map<number, string>();
   if (pids.length === 0) return result;
   try {
-    const { stdout } = await execFileAsync("lsof", ["-p", pids.join(","), "-Fpn", "-d", "cwd"], {
+    const { stdout } = await execPlatform("lsof", ["-p", pids.join(","), "-Fpn", "-d", "cwd"], {
       timeout: PROCESS_TIMEOUT_MS,
     });
     let currentPid: number | null = null;
@@ -34,7 +47,7 @@ export async function getBatchWorkingDirectories(pids: number[]): Promise<Map<nu
       }
     }
   } catch {
-    /* ignore — PIDs may have exited */
+    /* ignore -- PIDs may have exited */
   }
   return result;
 }

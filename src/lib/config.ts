@@ -58,7 +58,8 @@ export const BROWSER_OPTIONS = [
   { id: "edge", label: "Microsoft Edge", appName: "Microsoft Edge" },
 ];
 
-export const TERMINAL_APP_OPTIONS = [
+// Platform-specific terminal options -- Windows only supports Windows Terminal
+const MAC_TERMINAL_APP_OPTIONS = [
   { id: "terminal-app", label: "Terminal", appName: "Terminal" },
   { id: "iterm", label: "iTerm2", appName: "iTerm" },
   { id: "ghostty", label: "Ghostty", appName: "Ghostty" },
@@ -66,6 +67,13 @@ export const TERMINAL_APP_OPTIONS = [
   { id: "wezterm", label: "WezTerm", appName: "WezTerm" },
   { id: "alacritty", label: "Alacritty", appName: "Alacritty" },
 ];
+
+const WIN_TERMINAL_APP_OPTIONS = [
+  { id: "windows-terminal", label: "Windows Terminal", appName: "Windows Terminal" },
+];
+
+export const TERMINAL_APP_OPTIONS =
+  process.platform === "win32" ? WIN_TERMINAL_APP_OPTIONS : MAC_TERMINAL_APP_OPTIONS;
 
 export const TERMINAL_OPEN_IN_OPTIONS = [
   { id: "tab", label: "New tab" },
@@ -85,9 +93,9 @@ const DEFAULT_CONFIG: AppConfig = {
   notifications: true,
   notificationSound: true,
   alwaysNotify: false,
-  terminalApp: "terminal-app",
+  terminalApp: process.platform === "win32" ? "windows-terminal" : "terminal-app",
   terminalOpenIn: "tab",
-  terminalUseTmux: false,
+  terminalUseTmux: process.platform === "win32" ? true : false,
   terminalTmuxMode: "per-project",
   initialPrompt: DEFAULT_INITIAL_PROMPT,
   createPrPrompt: DEFAULT_CREATE_PR_PROMPT,

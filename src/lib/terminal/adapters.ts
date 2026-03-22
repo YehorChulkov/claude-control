@@ -3,9 +3,22 @@ import { promisify } from "util";
 import type { TerminalInfo, TerminalApp } from "./types";
 import { detectTmuxClients, buildProcessTree, findTerminalInTree } from "./detect";
 import { PROCESS_TIMEOUT_MS, APPLESCRIPT_FOCUS_DELAY_S } from "../constants";
+import { isWindows, isMac, wslExecArgs, getWslDistro } from "../platform";
 
 const execFileAsync = promisify(execFile);
 const OSASCRIPT_TIMEOUT_MS = 10000;
+
+/**
+ * Helper to run a command, automatically prefixing with `wsl --` on Windows.
+ */
+function execPlatform(
+  command: string,
+  args: string[],
+  options: { timeout?: number } = {},
+): Promise<{ stdout: string; stderr: string }> {
+  const { command: cmd, args: cmdArgs } = wslExecArgs(command, args);
+  return execFileAsync(cmd, cmdArgs, { ...options, encoding: "utf-8" });
+}
 
 function escapeForAppleScript(text: string): string {
   return text.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -30,10 +43,10 @@ function mapKeystrokeToSystemEvents(keystroke: string): string {
   }
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// AppleScript template builders — shared across focusSession, sendText,
+// ----------------------------------------------------------------
+// AppleScript template builders -- shared across focusSession, sendText,
 // and sendKeystroke to avoid duplicating TTY-matching loops.
-// ────────────────────────────────────────────────────────────────────────────
+// ----------------------------------------------------------------
 
 function iTermFocusScript(ttyPath: string): string {
   const safeTty = escapeForAppleScript(ttyPath);
@@ -86,16 +99,21 @@ function genericActivateScript(appName: string): string {
   return `tell application "${appName}" to activate`;
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ----------------------------------------------------------------
 // focusSession
-// ────────────────────────────────────────────────────────────────────────────
+// ----------------------------------------------------------------
 
 export async function focusSession(info: TerminalInfo): Promise<void> {
   // If in tmux, select the correct pane first
   if (info.inTmux && info.tmux) {
     const windowTarget = `${info.tmux.sessionName}:${info.tmux.windowIndex}`;
-    await execFileAsync("tmux", ["select-window", "-t", windowTarget], { timeout: PROCESS_TIMEOUT_MS });
-    await execFileAsync("tmux", ["select-pane", "-t", info.tmux.paneId], { timeout: PROCESS_TIMEOUT_MS });
+    await execPlatform("tmux", ["select-window", "-t", windowTarget], { timeout: PROCESS_TIMEOUT_MS });
+    await execPlatform("tmux", ["select-pane", "-t", info.tmux.paneId], { timeout: PROCESS_TIMEOUT_MS });
+  }
+
+  // On Windows, tmux pane selection is all we can do (no window focus from WSL)
+  if (isWindows) {
+    return;
   }
 
   // Use tmux client TTY (terminal tab's TTY) when in tmux, otherwise the process's TTY
@@ -117,22 +135,32 @@ export async function focusSession(info: TerminalInfo): Promise<void> {
       await execFileAsync("open", ["-a", info.appName], { timeout: OSASCRIPT_TIMEOUT_MS });
       break;
 
+    case "windows-terminal":
+      // On Windows, we can't programmatically focus Windows Terminal from Node.
+      // tmux pane selection above is sufficient.
+      break;
+
     default:
       throw new Error("Cannot focus unknown terminal");
   }
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ----------------------------------------------------------------
 // sendText
-// ────────────────────────────────────────────────────────────────────────────
+// ----------------------------------------------------------------
 
 export async function sendText(info: TerminalInfo, text: string): Promise<void> {
-  // tmux: send directly to the pane — works in background without focus
+  // tmux: send directly to the pane -- works in background without focus
   if (info.inTmux && info.tmux) {
-    await execFileAsync("tmux", ["send-keys", "-t", info.tmux.paneId, text, "Enter"], {
+    await execPlatform("tmux", ["send-keys", "-t", info.tmux.paneId, text, "Enter"], {
       timeout: PROCESS_TIMEOUT_MS,
     });
     return;
+  }
+
+  // On Windows without tmux, we cannot send text
+  if (isWindows) {
+    throw new Error("Cannot send text to non-tmux session on Windows");
   }
 
   const asEscaped = escapeForAppleScript(text);
@@ -182,9 +210,9 @@ end tell`;
   }
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ----------------------------------------------------------------
 // sendKeystroke
-// ────────────────────────────────────────────────────────────────────────────
+// ----------------------------------------------------------------
 
 export async function sendKeystroke(info: TerminalInfo, keystroke: string): Promise<void> {
   // tmux: send directly to the pane
@@ -197,10 +225,15 @@ export async function sendKeystroke(info: TerminalInfo, keystroke: string): Prom
       tab: "Tab",
       space: "Space",
     };
-    await execFileAsync("tmux", ["send-keys", "-t", info.tmux.paneId, tmuxKeyMap[keystroke] ?? keystroke], {
+    await execPlatform("tmux", ["send-keys", "-t", info.tmux.paneId, tmuxKeyMap[keystroke] ?? keystroke], {
       timeout: PROCESS_TIMEOUT_MS,
     });
     return;
+  }
+
+  // On Windows without tmux, we cannot send keystrokes
+  if (isWindows) {
+    throw new Error("Cannot send keystroke to non-tmux session on Windows");
   }
 
   // iTerm2: use write text for simple keys (no focus needed)
@@ -237,7 +270,7 @@ end tell`;
 
   // All remaining apps: combined focus + keystroke in a single osascript
   // to avoid Electron focus-steal race between two separate calls
-  if (info.app === "unknown") {
+  if (info.app === "unknown" || info.app === "windows-terminal") {
     throw new Error("Cannot send keystroke to unknown terminal");
   }
 
@@ -260,9 +293,9 @@ end tell`;
   }
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ----------------------------------------------------------------
 // createSession
-// ────────────────────────────────────────────────────────────────────────────
+// ----------------------------------------------------------------
 
 export interface CreateSessionOpts {
   terminalApp: TerminalApp;
@@ -284,7 +317,7 @@ function shellEscapeDouble(s: string): string {
 export async function createSession(opts: CreateSessionOpts): Promise<void> {
   const { terminalApp, openIn, useTmux, tmuxSession, cwd, prompt } = opts;
 
-  // Build the shell command with proper escaping — all user input
+  // Build the shell command with proper escaping -- all user input
   // goes through shellEscape so callers can't introduce injection
   let command = "claude";
   if (prompt) {
@@ -295,27 +328,29 @@ export async function createSession(opts: CreateSessionOpts): Promise<void> {
   // Named tmux session: try adding a window to existing session
   if (useTmux && tmuxSession) {
     try {
-      await execFileAsync("tmux", ["new-window", "-t", tmuxSession, cmd], { timeout: OSASCRIPT_TIMEOUT_MS });
+      await execPlatform("tmux", ["new-window", "-t", tmuxSession, cmd], { timeout: OSASCRIPT_TIMEOUT_MS });
       // Focus the terminal tab that has the tmux client for this session
-      try {
-        const [clients, tree] = await Promise.all([detectTmuxClients(), buildProcessTree()]);
-        const client = clients.find((c) => c.sessionName === tmuxSession);
-        if (client) {
-          const termApp = findTerminalInTree(client.pid, tree);
-          // Don't set inTmux — we just want to focus the terminal tab by
-          // the client TTY. tmux already switched to the new window.
-          await focusSession({
-            ...termApp,
-            inTmux: false,
-            tty: client.tty,
-          });
+      if (isMac) {
+        try {
+          const [clients, tree] = await Promise.all([detectTmuxClients(), buildProcessTree()]);
+          const client = clients.find((c) => c.sessionName === tmuxSession);
+          if (client) {
+            const termApp = findTerminalInTree(client.pid, tree);
+            // Don't set inTmux -- we just want to focus the terminal tab by
+            // the client TTY. tmux already switched to the new window.
+            await focusSession({
+              ...termApp,
+              inTmux: false,
+              tty: client.tty,
+            });
+          }
+        } catch (err) {
+          console.error("focus after new-window failed:", err);
         }
-      } catch (err) {
-        console.error("focus after new-window failed:", err);
       }
       return;
     } catch {
-      // Session doesn't exist — fall through to open a terminal with new-session
+      // Session doesn't exist -- fall through to open a terminal with new-session
     }
   }
 
@@ -329,6 +364,20 @@ export async function createSession(opts: CreateSessionOpts): Promise<void> {
     effectiveCommand = cmd;
   }
 
+  // Windows: use wt.exe to open a new tab in Windows Terminal with WSL
+  if (isWindows) {
+    const distro = await getWslDistro();
+    const distroArg = distro ? ["-d", distro] : [];
+    // wt.exe -w 0 new-tab wsl -d <distro> -- bash -c "<command>"
+    await execFileAsync(
+      "wt.exe",
+      ["-w", "0", "new-tab", "wsl", ...distroArg, "--", "bash", "-c", effectiveCommand],
+      { timeout: OSASCRIPT_TIMEOUT_MS },
+    );
+    return;
+  }
+
+  // macOS terminal launch
   switch (terminalApp) {
     case "iterm": {
       const asCmd = escapeForAppleScript(effectiveCommand);
@@ -382,13 +431,13 @@ end tell`;
   }
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ----------------------------------------------------------------
 // listTmuxSessions
-// ────────────────────────────────────────────────────────────────────────────
+// ----------------------------------------------------------------
 
 export async function listTmuxSessions(): Promise<{ name: string; windows: number; attached: boolean }[]> {
   try {
-    const { stdout } = await execFileAsync(
+    const { stdout } = await execPlatform(
       "tmux",
       ["list-sessions", "-F", "#{session_name}\t#{session_windows}\t#{session_attached}"],
       { timeout: PROCESS_TIMEOUT_MS },

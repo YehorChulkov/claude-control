@@ -11,6 +11,7 @@ import {
   sendText,
   sendKeystroke,
 } from "@/lib/terminal";
+import { isWindows, isMac } from "@/lib/platform";
 
 const execFileAsync = promisify(execFile);
 const execAsync = promisify(exec);
@@ -20,8 +21,11 @@ type ActionType = "focus" | "iterm" | "editor" | "finder" | "git-gui" | "send-me
 /**
  * Move the frontmost window of an app to a target screen.
  * screenIndex 0 = primary/main screen, 1 = secondary, etc.
+ * macOS only -- no-op on other platforms.
  */
 async function moveAppToScreen(appName: string, screenIndex: number): Promise<void> {
+  if (!isMac) return;
+
   const script = `
 use framework "AppKit"
 
@@ -58,7 +62,7 @@ return "ok"
   try {
     await execAsync(`osascript -l AppleScript -e '${script.replace(/'/g, "'\"'\"'")}'`, { timeout: 5000 });
   } catch {
-    // Silently fail — window positioning is best-effort
+    // Silently fail -- window positioning is best-effort
   }
 }
 
@@ -114,16 +118,25 @@ export async function POST(request: Request) {
         if (!editorDef || !editorDef.command) {
           return NextResponse.json({ error: "No editor configured" }, { status: 400 });
         }
-        await execFileAsync(editorDef.command, [path!]);
-        if (targetScreen !== undefined) {
+        if (isWindows) {
+          // On Windows, use cmd to launch the editor
+          await execAsync(`"${editorDef.command}" "${path}"`, { timeout: 10000 });
+        } else {
+          await execFileAsync(editorDef.command, [path!]);
+        }
+        if (isMac && targetScreen !== undefined) {
           await new Promise((r) => setTimeout(r, 800));
           await moveAppToScreen(editorDef.processName, targetScreen);
         }
         break;
       }
       case "finder":
-        await execFileAsync("open", [path!]);
-        if (targetScreen !== undefined) {
+        if (isWindows) {
+          await execAsync(`explorer.exe "${path}"`, { timeout: 10000 });
+        } else {
+          await execFileAsync("open", [path!]);
+        }
+        if (isMac && targetScreen !== undefined) {
           await new Promise((r) => setTimeout(r, 500));
           await moveAppToScreen("Finder", targetScreen);
         }
@@ -134,8 +147,13 @@ export async function POST(request: Request) {
         if (!guiDef || !guiDef.appName) {
           return NextResponse.json({ error: "No git GUI configured" }, { status: 400 });
         }
-        await execFileAsync("open", ["-a", guiDef.appName, path!]);
-        if (targetScreen !== undefined) {
+        if (isWindows) {
+          // Best-effort: try to launch via command name
+          await execAsync(`start "" "${guiDef.appName}"`, { timeout: 10000 }).catch(() => {});
+        } else {
+          await execFileAsync("open", ["-a", guiDef.appName, path!]);
+        }
+        if (isMac && targetScreen !== undefined) {
           await new Promise((r) => setTimeout(r, 800));
           await moveAppToScreen(guiDef.appName, targetScreen);
         }
@@ -169,6 +187,13 @@ export async function POST(request: Request) {
         if (!url) {
           return NextResponse.json({ error: "Missing url" }, { status: 400 });
         }
+
+        if (isWindows) {
+          // On Windows, use start to open URLs in the default browser
+          await execAsync(`start "" "${url}"`, { timeout: 10000 });
+          break;
+        }
+
         const browserConfig = await loadConfig();
         const browserDef = BROWSER_OPTIONS.find((b) => b.id === browserConfig.browser) ?? BROWSER_OPTIONS[0];
         const escapedUrl = url.replace(/"/g, '\\"');

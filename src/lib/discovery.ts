@@ -3,7 +3,7 @@ import { join } from "path";
 import { ClaudeSession, ConversationPreview } from "./types";
 import { ProcessInfo, getAllProcessInfos } from "./process-utils";
 import { buildProcessTree, findClaudePidsFromTree } from "./terminal/detect";
-import { workingDirToProjectDir, repoNameFromPath } from "./paths";
+import { workingDirToProjectDir, repoNameFromPath, getProjectsDir } from "./paths";
 import {
   readJsonlTail,
   readJsonlHead,
@@ -54,10 +54,11 @@ async function buildSession(
   info: ProcessInfo,
   hookStatus: HookStatus | undefined,
   claimedPaths: Set<string>,
+  projectsBaseDir: string,
 ): Promise<ClaudeSession | null> {
   if (!info.workingDirectory) return null;
 
-  const projectDir = workingDirToProjectDir(info.workingDirectory);
+  const projectDir = workingDirToProjectDir(info.workingDirectory, projectsBaseDir);
   const jsonlPath = hookStatus?.transcriptPath ?? (await findLatestJsonl(projectDir, claimedPaths));
 
   let sessionId = `pid-${info.pid}`;
@@ -144,12 +145,13 @@ async function buildSession(
 }
 
 export async function discoverSessions(): Promise<ClaudeSession[]> {
-  // Single ps call builds the full tree (pid, ppid, %cpu, comm) —
+  // Single ps call builds the full tree (pid, ppid, %cpu, comm) --
   // extract claude PIDs and their CPU% from it, then one lsof for cwds
-  const [processTree, hookStatuses, meta] = await Promise.all([
+  const [processTree, hookStatuses, meta, projectsBaseDir] = await Promise.all([
     buildProcessTree(),
     readAllHookStatuses(),
     loadSessionMeta(),
+    getProjectsDir(),
   ]);
   const pids = findClaudePidsFromTree(processTree);
   const processInfos = await getAllProcessInfos(pids, processTree);
@@ -166,7 +168,7 @@ export async function discoverSessions(): Promise<ClaudeSession[]> {
   const results = await Promise.all(
     processInfos
       .filter((info) => info.workingDirectory !== null)
-      .map((info) => buildSession(info, hookStatuses.get(info.pid), claimedPaths)),
+      .map((info) => buildSession(info, hookStatuses.get(info.pid), claimedPaths, projectsBaseDir)),
   );
 
   const sessions = results.filter((s): s is ClaudeSession => s !== null);

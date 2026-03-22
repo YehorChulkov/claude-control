@@ -7,18 +7,34 @@ const http = require("http");
 const PORT = 3200;
 let nextProcess = null;
 
+const isWindows = process.platform === "win32";
+const isMac = process.platform === "darwin";
+
 // Electron apps launched from Finder/dock get a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin).
 // Augment it so child processes can find tools like `gh` installed via Homebrew or other managers.
-const EXTRA_PATHS = ["/opt/homebrew/bin", "/usr/local/bin", "/opt/homebrew/sbin"];
-if (process.env.PATH) {
-  const existing = process.env.PATH.split(":");
-  for (const p of EXTRA_PATHS) {
-    if (!existing.includes(p)) existing.push(p);
+if (isMac) {
+  const EXTRA_PATHS = ["/opt/homebrew/bin", "/usr/local/bin", "/opt/homebrew/sbin"];
+  if (process.env.PATH) {
+    const existing = process.env.PATH.split(":");
+    for (const p of EXTRA_PATHS) {
+      if (!existing.includes(p)) existing.push(p);
+    }
+    process.env.PATH = existing.join(":");
+  } else {
+    process.env.PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin", ...EXTRA_PATHS].join(":");
   }
-  process.env.PATH = existing.join(":");
-} else {
-  process.env.PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin", ...EXTRA_PATHS].join(":");
+} else if (isWindows) {
+  // On Windows, ensure System32 is in PATH for wsl.exe and wt.exe
+  const system32 = path.join(process.env.SYSTEMROOT || "C:\\Windows", "System32");
+  if (process.env.PATH) {
+    const existing = process.env.PATH.split(";");
+    if (!existing.some((p) => p.toLowerCase() === system32.toLowerCase())) {
+      existing.push(system32);
+    }
+    process.env.PATH = existing.join(";");
+  }
 }
+
 let mainWindow = null;
 let isQuitting = false;
 
@@ -72,7 +88,7 @@ async function startNextServer() {
   const appDir = getNextAppDir();
 
   if (app.isPackaged) {
-    // Use Electron's bundled Node.js via utilityProcess — no system Node required
+    // Use Electron's bundled Node.js via utilityProcess -- no system Node required
     const serverPath = path.join(appDir, "server.js");
     console.log(`Starting standalone server via utilityProcess: ${serverPath}`);
 
@@ -109,11 +125,12 @@ async function startNextServer() {
       }
     });
   } else {
-    const nextBin = path.join(appDir, "node_modules", ".bin", "next");
+    const nextBin = path.join(appDir, "node_modules", ".bin", isWindows ? "next.cmd" : "next");
     nextProcess = spawn(nextBin, ["dev", "-p", String(PORT)], {
       cwd: appDir,
       env: { ...process.env, PORT: String(PORT) },
       stdio: ["ignore", "pipe", "pipe"],
+      shell: isWindows,
     });
 
     nextProcess.stdout?.on("data", (data) => {
@@ -157,13 +174,11 @@ async function waitForServer(maxAttempts = 30) {
 }
 
 function createWindow() {
-  mainWindow = new BrowserWindow({
+  const windowOptions = {
     width: 1400,
     height: 900,
     minWidth: 800,
     minHeight: 600,
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 16, y: 16 },
     backgroundColor: "#050508",
     icon: path.join(__dirname, "..", "public", "icon.png"),
     webPreferences: {
@@ -171,7 +186,15 @@ function createWindow() {
       contextIsolation: true,
     },
     show: false,
-  });
+  };
+
+  // macOS-specific title bar styling
+  if (isMac) {
+    windowOptions.titleBarStyle = "hiddenInset";
+    windowOptions.trafficLightPosition = { x: 16, y: 16 };
+  }
+
+  mainWindow = new BrowserWindow(windowOptions);
 
   mainWindow.loadURL(`http://localhost:${PORT}`);
 
@@ -209,7 +232,10 @@ app.on("ready", async () => {
 });
 
 app.on("window-all-closed", () => {
-  app.quit();
+  // On macOS, apps typically stay open until Cmd+Q
+  if (!isMac) {
+    app.quit();
+  }
 });
 
 app.on("before-quit", () => {

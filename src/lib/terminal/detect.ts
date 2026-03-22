@@ -2,10 +2,11 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import type { TerminalApp, TerminalInfo, TmuxPaneInfo, TmuxClientInfo, ProcessTreeEntry } from "./types";
 import { PROCESS_TIMEOUT_MS } from "../constants";
+import { isWindows, wslExecArgs } from "../platform";
 
 const execFileAsync = promisify(execFile);
 
-// Known terminal mappings: process name (lowercased) → app info
+// Known terminal mappings: process name (lowercased) -> app info
 const KNOWN_TERMINALS: Record<string, { app: TerminalApp; appName: string; processName: string }> = {
   iterm2: { app: "iterm", appName: "iTerm2", processName: "iTerm2" },
   terminal: { app: "terminal-app", appName: "Terminal", processName: "Terminal" },
@@ -14,6 +15,13 @@ const KNOWN_TERMINALS: Record<string, { app: TerminalApp; appName: string; proce
   "wezterm-gui": { app: "wezterm", appName: "WezTerm", processName: "wezterm-gui" },
   wezterm: { app: "wezterm", appName: "WezTerm", processName: "WezTerm" },
   alacritty: { app: "alacritty", appName: "Alacritty", processName: "alacritty" },
+  windowsterminal: { app: "windows-terminal", appName: "Windows Terminal", processName: "WindowsTerminal.exe" },
+};
+
+const WINDOWS_TERMINAL_INFO: Pick<TerminalInfo, "app" | "appName" | "processName"> = {
+  app: "windows-terminal",
+  appName: "Windows Terminal",
+  processName: "WindowsTerminal.exe",
 };
 
 const UNKNOWN_TERMINAL: Pick<TerminalInfo, "app" | "appName" | "processName"> = {
@@ -22,7 +30,7 @@ const UNKNOWN_TERMINAL: Pick<TerminalInfo, "app" | "appName" | "processName"> = 
   processName: "unknown",
 };
 
-// Cache keyed by PID — only caches successful (non-unknown) detections
+// Cache keyed by PID -- only caches successful (non-unknown) detections
 const terminalCache = new Map<number, TerminalInfo>();
 
 export function clearTerminalCache(pid: number): void {
@@ -36,13 +44,25 @@ export function evictStaleTerminalCache(alivePids: Set<number>): void {
 }
 
 /**
+ * Helper to run a command, automatically prefixing with `wsl --` on Windows.
+ */
+function execPlatform(
+  command: string,
+  args: string[],
+  options: { timeout?: number } = {},
+): Promise<{ stdout: string; stderr: string }> {
+  const { command: cmd, args: cmdArgs } = wslExecArgs(command, args);
+  return execFileAsync(cmd, cmdArgs, { ...options, encoding: "utf-8" });
+}
+
+/**
  * Build a process tree from a single `ps -eo pid,ppid,%cpu,comm` call.
  * Returns a Map keyed by PID. Includes CPU% so discovery can skip
  * a second ps call for per-process details.
  */
 export async function buildProcessTree(): Promise<Map<number, ProcessTreeEntry>> {
   try {
-    const { stdout } = await execFileAsync("ps", ["-eo", "pid,ppid,%cpu,comm"], {
+    const { stdout } = await execPlatform("ps", ["-eo", "pid,ppid,%cpu,comm"], {
       timeout: PROCESS_TIMEOUT_MS,
     });
     const tree = new Map<number, ProcessTreeEntry>();
@@ -77,13 +97,13 @@ export function findClaudePidsFromTree(processTree: Map<number, ProcessTreeEntry
 
 /**
  * Get TTYs for multiple PIDs in a single `ps` call.
- * Returns a Map of PID → normalized TTY path.
+ * Returns a Map of PID -> normalized TTY path.
  */
 export async function getTtysForPids(pids: number[]): Promise<Map<number, string>> {
   const result = new Map<number, string>();
   if (pids.length === 0) return result;
   try {
-    const { stdout } = await execFileAsync("ps", ["-o", "pid=,tty=", "-p", pids.join(",")], {
+    const { stdout } = await execPlatform("ps", ["-o", "pid=,tty=", "-p", pids.join(",")], {
       timeout: PROCESS_TIMEOUT_MS,
     });
     for (const line of stdout.trim().split("\n")) {
@@ -105,7 +125,7 @@ export async function getTtysForPids(pids: number[]): Promise<Map<number, string
  * Get the TTY for a single PID. Throws if no TTY found.
  */
 export async function getTtyForPid(pid: number): Promise<string> {
-  const { stdout } = await execFileAsync("ps", ["-o", "tty=", "-p", String(pid)], {
+  const { stdout } = await execPlatform("ps", ["-o", "tty=", "-p", String(pid)], {
     timeout: PROCESS_TIMEOUT_MS,
   });
   const tty = stdout.trim();
@@ -124,7 +144,7 @@ function normalizeTty(tty: string): string {
  */
 export async function detectAllTmuxPanes(): Promise<Map<string, TmuxPaneInfo>> {
   try {
-    const { stdout } = await execFileAsync(
+    const { stdout } = await execPlatform(
       "tmux",
       ["list-panes", "-a", "-F", "#{pane_tty}\t#{pane_id}\t#{session_name}\t#{window_index}\t#{pane_index}"],
       { timeout: 5000 },
@@ -157,7 +177,7 @@ export async function detectAllTmuxPanes(): Promise<Map<string, TmuxPaneInfo>> {
  */
 export async function detectTmuxClients(): Promise<TmuxClientInfo[]> {
   try {
-    const { stdout } = await execFileAsync(
+    const { stdout } = await execPlatform(
       "tmux",
       ["list-clients", "-F", "#{client_tty}\t#{client_pid}\t#{client_session}"],
       { timeout: 5000 },
@@ -180,6 +200,9 @@ export async function detectTmuxClients(): Promise<TmuxClientInfo[]> {
 /**
  * Walk the process tree upward from startPid, checking each ancestor's comm
  * against known terminals. Returns matched terminal info or unknown.
+ *
+ * On Windows, the process tree is from WSL so we won't find Windows Terminal.
+ * In that case, we default to Windows Terminal.
  */
 export function findTerminalInTree(
   startPid: number,
@@ -199,6 +222,12 @@ export function findTerminalInTree(
     currentPid = entry.ppid;
   }
 
+  // On Windows, the terminal (Windows Terminal) runs outside WSL,
+  // so it won't appear in the WSL process tree. Default to Windows Terminal.
+  if (isWindows) {
+    return WINDOWS_TERMINAL_INFO;
+  }
+
   return UNKNOWN_TERMINAL;
 }
 
@@ -214,12 +243,12 @@ export function matchTerminal(comm: string): Pick<TerminalInfo, "app" | "appName
   const direct = KNOWN_TERMINALS[lower];
   if (direct) return direct;
 
-  // Fuzzy match for versioned/server processes (e.g. "iTermServer-3.5.14" → iterm)
+  // Fuzzy match for versioned/server processes (e.g. "iTermServer-3.5.14" -> iterm)
   for (const [key, value] of Object.entries(KNOWN_TERMINALS)) {
     if (lower.startsWith(key) || lower.includes(key)) return value;
   }
 
-  // Match by app bundle path (e.g. "/Applications/iTerm.app/..." → iterm)
+  // Match by app bundle path (e.g. "/Applications/iTerm.app/..." -> iterm)
   const lowerComm = comm.toLowerCase();
   if (lowerComm.includes("iterm")) return KNOWN_TERMINALS["iterm2"];
   if (lowerComm.includes("ghostty")) return KNOWN_TERMINALS["ghostty"];
@@ -266,7 +295,7 @@ export async function detectTerminal(
       };
 
       termApp =
-        sessionClient && sessionClient.pid > 0 ? findTerminalInTree(sessionClient.pid, processTree) : UNKNOWN_TERMINAL;
+        sessionClient && sessionClient.pid > 0 ? findTerminalInTree(sessionClient.pid, processTree) : isWindows ? WINDOWS_TERMINAL_INFO : UNKNOWN_TERMINAL;
     } else {
       // Not in tmux: walk up from the claude process itself
       termApp = findTerminalInTree(pid, processTree);
@@ -284,6 +313,10 @@ export async function detectTerminal(
     }
     return result;
   } catch {
+    // On Windows, default to Windows Terminal even on failure
+    if (isWindows) {
+      return { ...WINDOWS_TERMINAL_INFO, inTmux: false, tty: "" };
+    }
     return { ...UNKNOWN_TERMINAL, inTmux: false, tty: "" };
   }
 }
@@ -295,5 +328,6 @@ export function getTerminalAppName(app: TerminalApp): string {
   for (const entry of Object.values(KNOWN_TERMINALS)) {
     if (entry.app === app) return entry.appName;
   }
+  if (app === "windows-terminal") return "Windows Terminal";
   return app;
 }

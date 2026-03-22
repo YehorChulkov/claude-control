@@ -1,6 +1,10 @@
 import { homedir } from "os";
 import { join } from "path";
 
+// These are the default (macOS/Linux native) paths.
+// On Windows, platform.ts provides resolveClaudeProjectsDir() for the WSL filesystem path.
+// For synchronous access these defaults are used; the discovery layer resolves
+// the correct path asynchronously via platform helpers when needed.
 export const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
 export const CLAUDE_HISTORY_FILE = join(homedir(), ".claude", "history.jsonl");
 export const POLL_INTERVAL_MS = 2000;
