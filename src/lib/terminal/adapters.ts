@@ -484,3 +484,43 @@ export async function listTmuxSessions(): Promise<{ name: string; windows: numbe
     return [];
   }
 }
+
+// ----------------------------------------------------------------
+// getTmuxPaneDetails
+// ----------------------------------------------------------------
+
+export async function getTmuxPaneDetails(
+  sessionName: string,
+): Promise<{ paneId: string; command: string; pid: number }[]> {
+  try {
+    const { stdout } = await execPlatform(
+      "tmux",
+      ["list-panes", "-t", sessionName, "-F", "#{pane_id}\t#{pane_current_command}\t#{pane_pid}"],
+      { timeout: PROCESS_TIMEOUT_MS },
+    );
+    return stdout
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        const parts = line.split("\t");
+        return {
+          paneId: parts[0] ?? "",
+          command: parts[1] ?? "",
+          pid: parseInt(parts[2] ?? "0", 10),
+        };
+      });
+  } catch {
+    return [];
+  }
+}
+
+// ----------------------------------------------------------------
+// killTmuxSession
+// ----------------------------------------------------------------
+
+export async function killTmuxSession(sessionName: string): Promise<void> {
+  await execPlatform("tmux", ["kill-session", "-t", sessionName], {
+    timeout: PROCESS_TIMEOUT_MS,
+  });
+}

@@ -13,6 +13,7 @@ export {
   getTtyForPid,
   getTtysForPids,
   detectAllTmuxPanes,
+  detectAllTmuxPanesByPid,
   detectTmuxClients,
   detectTerminal,
   findTerminalInTree,
@@ -28,5 +29,7 @@ export {
   sendKeystroke,
   createSession,
   listTmuxSessions,
+  getTmuxPaneDetails,
+  killTmuxSession,
 } from "./adapters";
 export type { CreateSessionOpts } from "./adapters";

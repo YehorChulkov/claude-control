@@ -14,6 +14,7 @@ import { NewSessionModal } from "@/components/NewSessionModal";
 import { KeyboardHints } from "@/components/KeyboardHints";
 import { SessionStatus } from "@/lib/types";
 import { flattenGroupedSessions } from "@/lib/group-sessions";
+import { TmuxPanel } from "@/components/TmuxPanel";
 import Link from "next/link";
 
 export default function Dashboard() {
@@ -293,6 +294,8 @@ export default function Dashboard() {
           onCancelEdit={handleCancelEdit}
         />
       )}
+
+      <TmuxPanel />
 
       {sessions.length > 0 && showKeyboardHints && (
         <KeyboardHints

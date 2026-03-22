@@ -22,7 +22,7 @@ import {
 } from "./session-reader";
 import { getGitSummary, getGitDiff, getMainWorktreePath, getPrUrl } from "./git-info";
 import { classifyStatus } from "./status-classifier";
-import { readAllHookStatuses, type HookStatus } from "./hooks-reader";
+import { readAllHookMaps, type HookStatus } from "./hooks-reader";
 import { loadSessionMeta } from "./session-meta";
 import { SessionDetail } from "./types";
 
@@ -54,6 +54,7 @@ async function findLatestJsonl(projectDir: string, excludePaths?: Set<string>): 
 async function buildSession(
   info: ProcessInfo,
   hookStatus: HookStatus | undefined,
+  hooksBySessionId: Map<string, HookStatus>,
   claimedPaths: Set<string>,
   projectsBaseDir: string,
 ): Promise<ClaudeSession | null> {
@@ -87,10 +88,15 @@ async function buildSession(
     getMainWorktreePath(info.workingDirectory),
   ]);
 
+  // After reading the JSONL, try to resolve hook status via session_id if PID match failed.
+  // This handles Windows where the hook PID may not match the claude.exe PID.
+  let effectiveHookStatus = hookStatus;
+
   if (jsonlResult) {
     const [lines, headLines, jsonlMtime] = jsonlResult;
     mtime = jsonlMtime;
-    sessionId = hookStatus?.sessionId ?? extractSessionId(lines) ?? sessionId;
+    const jsonlSessionId = extractSessionId(lines);
+    sessionId = hookStatus?.sessionId ?? jsonlSessionId ?? sessionId;
     startedAt = extractStartedAt(lines);
     branch = extractBranch(lines);
     preview = extractPreview(lines);
@@ -99,6 +105,11 @@ async function buildSession(
     pendingToolUse = hasPendingToolUse(lines);
     taskSummary = extractTaskSummary(headLines);
     if (mtime) lastActivity = mtime.toISOString();
+
+    // If no hook status matched by PID, try matching by session_id from the JSONL
+    if (!effectiveHookStatus && jsonlSessionId) {
+      effectiveHookStatus = hooksBySessionId.get(jsonlSessionId);
+    }
   }
 
   const resolvedBranch = git?.branch ?? branch;
@@ -113,7 +124,7 @@ async function buildSession(
   // APPROVAL_SETTLE_MS), because PermissionRequest hooks fire for auto-approved tools too.
   // If the hook status is available (and not null, meaning PermissionRequest was ignored),
   // use it; otherwise fall back to the heuristic classifier.
-  const hookDerivedStatus = hookStatus?.status ?? null;
+  const hookDerivedStatus = effectiveHookStatus?.status ?? null;
   const status: ClaudeSession["status"] =
     hookDerivedStatus ??
     classifyStatus({
@@ -148,12 +159,13 @@ async function buildSession(
 export async function discoverSessions(): Promise<ClaudeSession[]> {
   // Build process tree (covers both native + WSL on Windows)
   const nativeProjectsDir = getProjectsDir();
-  const [processTree, hookStatuses, meta, wslProjectsDir] = await Promise.all([
+  const [processTree, hookMaps, meta, wslProjectsDir] = await Promise.all([
     buildProcessTree(),
-    readAllHookStatuses(),
+    readAllHookMaps(),
     loadSessionMeta(),
     isWindows ? resolveWslClaudeProjectsDir() : Promise.resolve(null),
   ]);
+  const { byPid: hookStatuses, bySessionId: hooksBySessionId } = hookMaps;
   const pids = findClaudePidsFromTree(processTree);
   const processInfos = await getAllProcessInfos(pids, processTree);
 
@@ -174,7 +186,7 @@ export async function discoverSessions(): Promise<ClaudeSession[]> {
         const baseDir = isWslProcess(info.pid) && wslProjectsDir
           ? wslProjectsDir
           : nativeProjectsDir;
-        return buildSession(info, hookStatuses.get(info.pid), claimedPaths, baseDir);
+        return buildSession(info, hookStatuses.get(info.pid), hooksBySessionId, claimedPaths, baseDir);
       }),
   );
 

@@ -28,14 +28,20 @@ export function classifyStatusFromHook(eventName: string): SessionStatus | null 
   return EVENT_TO_STATUS[eventName] ?? null;
 }
 
-export async function readAllHookStatuses(): Promise<Map<number, HookStatus>> {
-  const result = new Map<number, HookStatus>();
+interface HookMaps {
+  byPid: Map<number, HookStatus>;
+  bySessionId: Map<string, HookStatus>;
+}
+
+async function readHookEvents(): Promise<HookMaps> {
+  const byPid = new Map<number, HookStatus>();
+  const bySessionId = new Map<string, HookStatus>();
 
   let entries: string[];
   try {
     entries = await readdir(EVENTS_DIR);
   } catch {
-    return result;
+    return { byPid, bySessionId };
   }
 
   const now = Date.now();
@@ -77,22 +83,46 @@ export async function readAllHookStatuses(): Promise<Map<number, HookStatus>> {
 
           const status = classifyStatusFromHook(data.event);
 
-          const pid = parseInt(filename.replace(/\.json$/, ""), 10);
-          if (isNaN(pid)) return;
-
-          result.set(pid, {
+          const hookStatus: HookStatus = {
             status,
             event: data.event,
             ts: data.ts ?? 0,
             cwd: data.cwd || null,
             sessionId: data.session_id || null,
             transcriptPath: data.transcript_path || null,
-          });
+          };
+
+          const pid = parseInt(filename.replace(/\.json$/, ""), 10);
+          if (!isNaN(pid)) {
+            byPid.set(pid, hookStatus);
+          }
+
+          if (data.session_id) {
+            // If multiple event files share the same session_id, keep the newest
+            const existing = bySessionId.get(data.session_id);
+            if (!existing || hookStatus.ts > existing.ts) {
+              bySessionId.set(data.session_id, hookStatus);
+            }
+          }
         } catch {
           // Invalid JSON -- skip
         }
       }),
   );
 
-  return result;
+  return { byPid, bySessionId };
+}
+
+export async function readAllHookStatuses(): Promise<Map<number, HookStatus>> {
+  const { byPid } = await readHookEvents();
+  return byPid;
+}
+
+export async function readAllHookStatusesBySessionId(): Promise<Map<string, HookStatus>> {
+  const { bySessionId } = await readHookEvents();
+  return bySessionId;
+}
+
+export async function readAllHookMaps(): Promise<HookMaps> {
+  return readHookEvents();
 }

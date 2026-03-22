@@ -6,6 +6,7 @@ import { loadConfig, EDITOR_OPTIONS, GIT_GUI_OPTIONS, BROWSER_OPTIONS } from "@/
 import {
   buildProcessTree,
   detectAllTmuxPanes,
+  detectAllTmuxPanesByPid,
   detectTerminal,
   focusSession,
   sendText,
@@ -107,8 +108,12 @@ export async function POST(request: Request) {
         if (!pid) {
           return NextResponse.json({ error: "Missing pid for focus action" }, { status: 400 });
         }
-        const [tree, panes] = await Promise.all([buildProcessTree(), detectAllTmuxPanes()]);
-        const info = await detectTerminal(pid, tree, panes);
+        const [tree, panes, panesByPid] = await Promise.all([
+          buildProcessTree(),
+          detectAllTmuxPanes(),
+          isWindows ? detectAllTmuxPanesByPid() : Promise.resolve(undefined),
+        ]);
+        const info = await detectTerminal(pid, tree, panes, undefined, panesByPid);
         await focusSession(info);
         break;
       }
@@ -167,9 +172,13 @@ export async function POST(request: Request) {
         if (!message) {
           return NextResponse.json({ error: "Missing message" }, { status: 400 });
         }
-        const [tree, panes] = await Promise.all([buildProcessTree(), detectAllTmuxPanes()]);
-        const info = await detectTerminal(pid, tree, panes);
-        await sendText(info, message);
+        const [msgTree, msgPanes, msgPanesByPid] = await Promise.all([
+          buildProcessTree(),
+          detectAllTmuxPanes(),
+          isWindows ? detectAllTmuxPanesByPid() : Promise.resolve(undefined),
+        ]);
+        const msgInfo = await detectTerminal(pid, msgTree, msgPanes, undefined, msgPanesByPid);
+        await sendText(msgInfo, message);
         break;
       }
       case "send-keystroke": {
@@ -179,9 +188,13 @@ export async function POST(request: Request) {
         if (!keystroke) {
           return NextResponse.json({ error: "Missing keystroke" }, { status: 400 });
         }
-        const [tree, panes] = await Promise.all([buildProcessTree(), detectAllTmuxPanes()]);
-        const info = await detectTerminal(pid, tree, panes);
-        await sendKeystroke(info, keystroke);
+        const [ksTree, ksPanes, ksPanesByPid] = await Promise.all([
+          buildProcessTree(),
+          detectAllTmuxPanes(),
+          isWindows ? detectAllTmuxPanesByPid() : Promise.resolve(undefined),
+        ]);
+        const ksInfo = await detectTerminal(pid, ksTree, ksPanes, undefined, ksPanesByPid);
+        await sendKeystroke(ksInfo, keystroke);
         break;
       }
       case "open-url": {

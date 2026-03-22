@@ -244,6 +244,67 @@ export async function detectAllTmuxPanes(): Promise<Map<string, TmuxPaneInfo>> {
 }
 
 /**
+ * Detect all tmux panes with their shell PIDs (for Windows PID-based matching).
+ * Returns a Map keyed by pane PID (with 10M offset for WSL).
+ */
+export async function detectAllTmuxPanesByPid(): Promise<Map<number, TmuxPaneInfo>> {
+  try {
+    const { stdout } = await execPlatform(
+      "tmux",
+      ["list-panes", "-a", "-F", "#{pane_pid}\t#{pane_tty}\t#{pane_id}\t#{session_name}\t#{window_index}\t#{pane_index}"],
+      { timeout: 5000 },
+    );
+    const panes = new Map<number, TmuxPaneInfo>();
+    for (const line of stdout.split("\n")) {
+      const parts = line.trim().split("\t");
+      if (parts.length < 6) continue;
+      const [rawPid, rawTty, paneId, sessionName, winIdx, paneIdx] = parts;
+      const panePid = parseInt(rawPid, 10);
+      if (isNaN(panePid)) continue;
+      const tty = normalizeTty(rawTty);
+      const windowIndex = parseInt(winIdx, 10);
+      const paneIndex = parseInt(paneIdx, 10);
+      // On Windows, WSL PIDs use a 10M offset to avoid collisions
+      const key = isWindows ? panePid + 10_000_000 : panePid;
+      panes.set(key, {
+        tty,
+        paneId,
+        sessionName,
+        windowIndex,
+        paneIndex,
+        target: `${sessionName}:${windowIndex}.${paneIndex}`,
+      });
+    }
+    return panes;
+  } catch {
+    return new Map();
+  }
+}
+
+/**
+ * Walk up the process tree from startPid and check if any ancestor is a tmux pane PID.
+ * Returns the matching TmuxPaneInfo if found, or undefined.
+ */
+function findTmuxPaneByAncestor(
+  startPid: number,
+  processTree: Map<number, ProcessTreeEntry>,
+  tmuxPanesByPid: Map<number, TmuxPaneInfo>,
+): TmuxPaneInfo | undefined {
+  let currentPid = startPid;
+  const visited = new Set<number>();
+
+  while (currentPid > 1 && !visited.has(currentPid)) {
+    visited.add(currentPid);
+    const pane = tmuxPanesByPid.get(currentPid);
+    if (pane) return pane;
+    const entry = processTree.get(currentPid);
+    if (!entry) break;
+    currentPid = entry.ppid;
+  }
+  return undefined;
+}
+
+/**
  * Detect all tmux clients.
  */
 export async function detectTmuxClients(): Promise<TmuxClientInfo[]> {
@@ -333,16 +394,54 @@ export function matchTerminal(comm: string): Pick<TerminalInfo, "app" | "appName
 /**
  * Detect the terminal for a given claude PID.
  * Uses cache for non-unknown results.
+ *
+ * On Windows, there are no TTYs for native processes, and WSL PIDs use a 10M offset.
+ * For WSL tmux sessions, we match by walking the process tree upward from the claude
+ * PID and checking if any ancestor is a tmux pane PID.
  */
 export async function detectTerminal(
   pid: number,
   processTree: Map<number, ProcessTreeEntry>,
   tmuxPanes: Map<string, TmuxPaneInfo>,
   tmuxClients?: TmuxClientInfo[],
+  tmuxPanesByPid?: Map<number, TmuxPaneInfo>,
 ): Promise<TerminalInfo> {
   const cached = terminalCache.get(pid);
   if (cached) return cached;
 
+  // On Windows, use PID-based tmux pane matching instead of TTY matching
+  if (isWindows) {
+    const panesByPid = tmuxPanesByPid ?? (await detectAllTmuxPanesByPid());
+    const paneInfo = findTmuxPaneByAncestor(pid, processTree, panesByPid);
+
+    if (paneInfo) {
+      const clients = tmuxClients ?? (await detectTmuxClients());
+      const sessionClient = clients.find((c) => c.sessionName === paneInfo.sessionName);
+
+      const tmuxInfo: TerminalInfo["tmux"] = {
+        paneId: paneInfo.paneId,
+        sessionName: paneInfo.sessionName,
+        windowIndex: paneInfo.windowIndex,
+        paneIndex: paneInfo.paneIndex,
+        target: paneInfo.target,
+        clientTty: sessionClient?.tty ?? "",
+      };
+
+      const result: TerminalInfo = {
+        ...WINDOWS_TERMINAL_INFO,
+        inTmux: true,
+        tty: paneInfo.tty,
+        tmux: tmuxInfo,
+      };
+      terminalCache.set(pid, result);
+      return result;
+    }
+
+    // No tmux pane found -- default to Windows Terminal without tmux
+    return { ...WINDOWS_TERMINAL_INFO, inTmux: false, tty: "" };
+  }
+
+  // macOS/Linux: use TTY-based matching
   try {
     const tty = await getTtyForPid(pid);
     const paneInfo = tmuxPanes.get(tty);
@@ -366,7 +465,7 @@ export async function detectTerminal(
       };
 
       termApp =
-        sessionClient && sessionClient.pid > 0 ? findTerminalInTree(sessionClient.pid, processTree) : isWindows ? WINDOWS_TERMINAL_INFO : UNKNOWN_TERMINAL;
+        sessionClient && sessionClient.pid > 0 ? findTerminalInTree(sessionClient.pid, processTree) : UNKNOWN_TERMINAL;
     } else {
       // Not in tmux: walk up from the claude process itself
       termApp = findTerminalInTree(pid, processTree);
@@ -384,10 +483,6 @@ export async function detectTerminal(
     }
     return result;
   } catch {
-    // On Windows, default to Windows Terminal even on failure
-    if (isWindows) {
-      return { ...WINDOWS_TERMINAL_INFO, inTmux: false, tty: "" };
-    }
     return { ...UNKNOWN_TERMINAL, inTmux: false, tty: "" };
   }
 }

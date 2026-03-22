@@ -69,13 +69,29 @@ $transcript = $data.transcript_path
 if (-not $sessionId -or -not $hookEvent) { exit 0 }
 
 $ts = [int][double]::Parse((Get-Date -UFormat %s))
-$ppid = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID").ParentProcessId
+
+# Walk up the process tree to find the claude.exe ancestor.
+# Process chain is: claude.exe -> cmd.exe -> powershell.exe (this script),
+# so using $PID's immediate parent gives cmd.exe, not claude.exe.
+$claudePid = $null
+$p = $PID
+while ($p -gt 0) {
+    $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$p" -ErrorAction SilentlyContinue
+    if (-not $proc) { break }
+    if ($proc.Name -eq 'claude.exe') { $claudePid = $p; break }
+    $p = $proc.ParentProcessId
+}
+
+# Fall back to parent PID if claude.exe not found in the ancestor chain
+if (-not $claudePid) {
+    $claudePid = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID").ParentProcessId
+}
 
 $json = @"
 {"event":"$hookEvent","session_id":"$sessionId","cwd":"$($cwd -replace '\\\\','\\\\\\\\')","transcript_path":"$($transcript -replace '\\\\','\\\\\\\\')","ts":$ts}
 "@
 
-$json | Out-File -FilePath "$eventsDir\\$ppid.json" -Encoding utf8 -NoNewline
+$json | Out-File -FilePath "$eventsDir\\$claudePid.json" -Encoding utf8 -NoNewline
 `;
 }
 
