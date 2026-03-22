@@ -77,42 +77,41 @@ export async function getBatchWorkingDirectories(pids: number[]): Promise<Map<nu
 
 /**
  * Get working directories for Windows processes by scanning JSONL files.
- * Since Windows has no `lsof`, we reverse-map project directories and
- * check recently modified JSONL files for CWD info.
+ * Since Windows has no `lsof`, we reverse-map project directories,
+ * sort by most recently modified JSONL, and assign to PIDs.
  */
 async function getWindowsCwds(pids: number[]): Promise<Map<number, string>> {
   const result = new Map<number, string>();
   if (pids.length === 0) return result;
 
   const projectsDir = resolveClaudeProjectsDir();
-  const unmatched = new Set(pids);
+
+  // Collect all project dirs with their latest JSONL mtime
+  const candidates: { workingDir: string; latestMtime: number }[] = [];
 
   try {
     const projectDirs = await readdir(projectsDir);
 
     for (const dir of projectDirs) {
-      if (unmatched.size === 0) break;
-
       const dirPath = join(projectsDir, dir);
-      let dirStat;
       try {
-        dirStat = await stat(dirPath);
+        const dirStat = await stat(dirPath);
         if (!dirStat.isDirectory()) continue;
       } catch {
         continue;
       }
 
       // Reverse-map the escaped directory name to a working directory
-      // Windows: "C--Users-yegor" → "C:\Users\yegor" (replace first -- with :\, then - with \)
+      // Windows: "C--Users-yegor" → "C:\Users\yegor"
       let workingDir: string;
       const winMatch = dir.match(/^([A-Za-z])--(.*)$/);
       if (winMatch) {
         workingDir = `${winMatch[1]}:\\${winMatch[2].replace(/-/g, "\\")}`;
       } else {
-        workingDir = dir.replace(/-/g, "/"); // Unix-style fallback
+        workingDir = dir.replace(/-/g, "/");
       }
 
-      // Check if any JSONL in this dir was recently modified
+      // Find the most recently modified JSONL in this dir
       let entries: string[];
       try {
         entries = (await readdir(dirPath)).filter((e) => e.endsWith(".jsonl"));
@@ -120,7 +119,6 @@ async function getWindowsCwds(pids: number[]): Promise<Map<number, string>> {
         continue;
       }
 
-      // Find the most recently modified JSONL
       let latestMtime = 0;
       for (const jsonlFile of entries) {
         try {
@@ -133,17 +131,22 @@ async function getWindowsCwds(pids: number[]): Promise<Map<number, string>> {
         }
       }
 
-      // If modified within last 2 minutes, likely an active session
-      if (Date.now() - latestMtime < 2 * 60 * 1000) {
-        for (const pid of unmatched) {
-          result.set(pid, workingDir);
-          unmatched.delete(pid);
-          break; // One PID per active project dir
-        }
+      if (latestMtime > 0) {
+        candidates.push({ workingDir, latestMtime });
       }
     }
   } catch {
     // projects dir doesn't exist
+  }
+
+  // Sort by most recent first and assign to PIDs
+  candidates.sort((a, b) => b.latestMtime - a.latestMtime);
+
+  const unmatched = [...pids];
+  for (const candidate of candidates) {
+    if (unmatched.length === 0) break;
+    const pid = unmatched.shift()!;
+    result.set(pid, candidate.workingDir);
   }
 
   return result;
