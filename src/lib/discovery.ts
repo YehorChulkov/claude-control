@@ -147,11 +147,11 @@ async function buildSession(
 export async function discoverSessions(): Promise<ClaudeSession[]> {
   // Single ps call builds the full tree (pid, ppid, %cpu, comm) --
   // extract claude PIDs and their CPU% from it, then one lsof for cwds
-  const [processTree, hookStatuses, meta, projectsBaseDir] = await Promise.all([
+  const projectsBaseDir = getProjectsDir();
+  const [processTree, hookStatuses, meta] = await Promise.all([
     buildProcessTree(),
     readAllHookStatuses(),
     loadSessionMeta(),
-    getProjectsDir(),
   ]);
   const pids = findClaudePidsFromTree(processTree);
   const processInfos = await getAllProcessInfos(pids, processTree);

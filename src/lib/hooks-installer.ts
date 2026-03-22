@@ -2,102 +2,32 @@ import { homedir } from "os";
 import { join } from "path";
 import { readFile, writeFile, mkdir, chmod, access } from "fs/promises";
 import { constants } from "fs";
-import { isWindows, execWsl, resolveWslHomedir } from "./platform";
+import { isWindows } from "./platform";
 
-// Native paths (macOS/Linux)
-const NATIVE_HOME = homedir();
-const NATIVE_CLAUDE_SETTINGS_PATH = join(NATIVE_HOME, ".claude", "settings.json");
-const NATIVE_HOOKS_DIR = join(NATIVE_HOME, ".claude-control", "hooks");
-const NATIVE_EVENTS_DIR = join(NATIVE_HOME, ".claude-control", "events");
-const NATIVE_HOOK_SCRIPT_PATH = join(NATIVE_HOOKS_DIR, "status-hook.sh");
+const HOME = homedir();
+const CLAUDE_SETTINGS_PATH = join(HOME, ".claude", "settings.json");
+const HOOKS_DIR = join(HOME, ".claude-control", "hooks");
+const EVENTS_DIR = join(HOME, ".claude-control", "events");
 
-// WSL paths (used in the hook script itself, which runs inside WSL)
-// These are resolved dynamically on Windows
-let _wslEventsDir: string | null = null;
-let _wslHooksDir: string | null = null;
-let _wslHookScriptPath: string | null = null;
-let _wslSettingsPath: string | null = null;
-// Windows UNC paths for file I/O from the Electron side
-let _winHooksDir: string | null = null;
-let _winEventsDir: string | null = null;
-let _winHookScriptPath: string | null = null;
-let _winSettingsPath: string | null = null;
-let _pathsResolved = false;
+// On Windows, use a PowerShell script; on macOS/Linux, use bash
+const HOOK_SCRIPT_NAME = isWindows ? "status-hook.ps1" : "status-hook.sh";
+const HOOK_SCRIPT_PATH = join(HOOKS_DIR, HOOK_SCRIPT_NAME);
 
-async function resolvePaths(): Promise<void> {
-  if (_pathsResolved) return;
+// The command registered in settings.json
+const HOOK_COMMAND = isWindows
+  ? `powershell -NoProfile -ExecutionPolicy Bypass -File "${HOOK_SCRIPT_PATH}"`
+  : HOOK_SCRIPT_PATH;
 
-  if (!isWindows) {
-    _pathsResolved = true;
-    return;
-  }
-
-  // Get WSL home directory
-  const winHome = await resolveWslHomedir();
-
-  // Windows UNC paths (for Node.js file I/O)
-  _winHooksDir = join(winHome, ".claude-control", "hooks");
-  _winEventsDir = join(winHome, ".claude-control", "events");
-  _winHookScriptPath = join(_winHooksDir, "status-hook.sh");
-  _winSettingsPath = join(winHome, ".claude", "settings.json");
-
-  // WSL-native paths (for the hook script content and settings.json hook references)
-  try {
-    const { stdout } = await execWsl("bash", ["-c", 'echo "$HOME"'], { timeout: 5000 });
-    const wslHome = stdout.trim();
-    _wslHooksDir = `${wslHome}/.claude-control/hooks`;
-    _wslEventsDir = `${wslHome}/.claude-control/events`;
-    _wslHookScriptPath = `${_wslHooksDir}/status-hook.sh`;
-    _wslSettingsPath = `${wslHome}/.claude/settings.json`;
-  } catch {
-    // Fallback
-    _wslHooksDir = "/home/user/.claude-control/hooks";
-    _wslEventsDir = "/home/user/.claude-control/events";
-    _wslHookScriptPath = `${_wslHooksDir}/status-hook.sh`;
-    _wslSettingsPath = "/home/user/.claude/settings.json";
-  }
-
-  _pathsResolved = true;
-}
-
-function getClaudeSettingsPath(): string {
-  return isWindows && _winSettingsPath ? _winSettingsPath : NATIVE_CLAUDE_SETTINGS_PATH;
-}
-
-function getHooksDir(): string {
-  return isWindows && _winHooksDir ? _winHooksDir : NATIVE_HOOKS_DIR;
-}
-
-function getEventsDir(): string {
-  return isWindows && _winEventsDir ? _winEventsDir : NATIVE_EVENTS_DIR;
-}
-
-function getHookScriptPath(): string {
-  return isWindows && _winHookScriptPath ? _winHookScriptPath : NATIVE_HOOK_SCRIPT_PATH;
-}
-
-/**
- * The hook script path as it should appear in settings.json (WSL-native path on Windows).
- */
-function getHookScriptPathForSettings(): string {
-  return isWindows && _wslHookScriptPath ? _wslHookScriptPath : NATIVE_HOOK_SCRIPT_PATH;
-}
-
-function buildHookScript(): string {
-  // The events dir must be a WSL-native path since the script runs inside WSL
-  const eventsDir = isWindows && _wslEventsDir ? _wslEventsDir : NATIVE_EVENTS_DIR;
-
+function buildBashHookScript(): string {
   return `#!/bin/bash
 # claude-control status hook -- writes session events for real-time status detection
 set -e
 
-EVENTS_DIR="${eventsDir}"
+EVENTS_DIR="${EVENTS_DIR}"
 mkdir -p "$EVENTS_DIR"
 
-# Read JSON from stdin
 INPUT=$(cat)
 
-# Extract fields using grep/sed (no jq dependency)
 HOOK_EVENT=$(echo "$INPUT" | grep -o '"hook_event_name"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"\\([^"]*\\)"$/\\1/')
 SESSION_ID=$(echo "$INPUT" | grep -o '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"\\([^"]*\\)"$/\\1/')
 CWD=$(echo "$INPUT" | grep -o '"cwd"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"\\([^"]*\\)"$/\\1/')
@@ -109,8 +39,43 @@ fi
 
 TS=$(date +%s)
 
-# $PPID = Claude process that invoked this hook (keys the event file by PID)
 echo "{\\"event\\":\\"$HOOK_EVENT\\",\\"session_id\\":\\"$SESSION_ID\\",\\"cwd\\":\\"$CWD\\",\\"transcript_path\\":\\"$TRANSCRIPT\\",\\"ts\\":$TS}" > "$EVENTS_DIR/$PPID.json"
+`;
+}
+
+function buildPowerShellHookScript(): string {
+  // PowerShell script that reads JSON from stdin and writes event file
+  // Use native PowerShell path separators
+  const eventsDir = EVENTS_DIR.replace(/\\/g, "\\\\");
+  return `# claude-control status hook -- writes session events for real-time status detection
+$ErrorActionPreference = "Stop"
+
+$eventsDir = "${eventsDir}"
+if (-not (Test-Path $eventsDir)) { New-Item -ItemType Directory -Path $eventsDir -Force | Out-Null }
+
+$input_text = [Console]::In.ReadToEnd()
+
+try {
+    $data = $input_text | ConvertFrom-Json
+} catch {
+    exit 0
+}
+
+$hookEvent = $data.hook_event_name
+$sessionId = $data.session_id
+$cwd = $data.cwd
+$transcript = $data.transcript_path
+
+if (-not $sessionId -or -not $hookEvent) { exit 0 }
+
+$ts = [int][double]::Parse((Get-Date -UFormat %s))
+$ppid = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID").ParentProcessId
+
+$json = @"
+{"event":"$hookEvent","session_id":"$sessionId","cwd":"$($cwd -replace '\\\\','\\\\\\\\')","transcript_path":"$($transcript -replace '\\\\','\\\\\\\\')","ts":$ts}
+"@
+
+$json | Out-File -FilePath "$eventsDir\\$ppid.json" -Encoding utf8 -NoNewline
 `;
 }
 
@@ -130,37 +95,22 @@ export async function ensureHooksInstalled(): Promise<boolean> {
   if (installed !== null) return installed;
 
   try {
-    await resolvePaths();
-
-    const claudeSettingsPath = getClaudeSettingsPath();
-    const hooksDir = getHooksDir();
-    const eventsDir = getEventsDir();
-    const hookScriptPath = getHookScriptPath();
-    const hookScriptPathForSettings = getHookScriptPathForSettings();
-
     // Create directories
-    await mkdir(hooksDir, { recursive: true });
-    await mkdir(eventsDir, { recursive: true });
+    await mkdir(HOOKS_DIR, { recursive: true });
+    await mkdir(EVENTS_DIR, { recursive: true });
 
-    // Write hook script
-    const hookScript = buildHookScript();
-    await writeFile(hookScriptPath, hookScript, "utf-8");
+    // Write hook script (platform-specific)
+    const hookScript = isWindows ? buildPowerShellHookScript() : buildBashHookScript();
+    await writeFile(HOOK_SCRIPT_PATH, hookScript, "utf-8");
 
-    // On Windows, chmod via WSL since UNC paths don't support Unix permissions
-    if (isWindows && _wslHookScriptPath) {
-      try {
-        await execWsl("chmod", ["755", _wslHookScriptPath], { timeout: 5000 });
-      } catch {
-        // Best effort
-      }
-    } else {
-      await chmod(hookScriptPath, 0o755);
+    if (!isWindows) {
+      await chmod(HOOK_SCRIPT_PATH, 0o755);
     }
 
     // Read existing settings
     let settings: Record<string, unknown> = {};
     try {
-      const raw = await readFile(claudeSettingsPath, "utf-8");
+      const raw = await readFile(CLAUDE_SETTINGS_PATH, "utf-8");
       settings = JSON.parse(raw);
     } catch {
       // No settings file or invalid JSON -- start fresh
@@ -171,9 +121,8 @@ export async function ensureHooksInstalled(): Promise<boolean> {
 
     for (const event of HOOK_EVENTS) {
       const existing = hooks[event] ?? [];
-      // Check if our hook is already registered (check both native and WSL paths)
       const alreadyRegistered = (existing as Array<{ hooks?: Array<{ command?: string }> }>).some((entry) =>
-        entry.hooks?.some((h) => h.command === hookScriptPathForSettings),
+        entry.hooks?.some((h) => h.command === HOOK_COMMAND),
       );
 
       if (!alreadyRegistered) {
@@ -183,7 +132,7 @@ export async function ensureHooksInstalled(): Promise<boolean> {
           hooks: [
             {
               type: "command",
-              command: hookScriptPathForSettings,
+              command: HOOK_COMMAND,
               timeout: 5,
               async: true,
             },
@@ -195,9 +144,8 @@ export async function ensureHooksInstalled(): Promise<boolean> {
     }
 
     if (changed) {
-      // Verify settings.json is writable before attempting write
       try {
-        await access(claudeSettingsPath, constants.W_OK);
+        await access(CLAUDE_SETTINGS_PATH, constants.W_OK);
       } catch {
         console.warn("claude-control: settings.json is not writable, hooks not installed");
         installed = false;
@@ -205,7 +153,7 @@ export async function ensureHooksInstalled(): Promise<boolean> {
       }
 
       settings.hooks = hooks;
-      await writeFile(claudeSettingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+      await writeFile(CLAUDE_SETTINGS_PATH, JSON.stringify(settings, null, 2) + "\n", "utf-8");
     }
 
     installed = true;

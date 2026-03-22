@@ -57,15 +57,48 @@ function execPlatform(
 
 /**
  * Build a process tree from a single `ps -eo pid,ppid,%cpu,comm` call.
- * Returns a Map keyed by PID. Includes CPU% so discovery can skip
- * a second ps call for per-process details.
+ * On Windows, uses PowerShell to get native process info.
+ * Returns a Map keyed by PID.
  */
 export async function buildProcessTree(): Promise<Map<number, ProcessTreeEntry>> {
+  const tree = new Map<number, ProcessTreeEntry>();
+
+  if (isWindows) {
+    // On Windows, use PowerShell to get native process info
+    try {
+      const { stdout } = await execFileAsync(
+        "powershell",
+        [
+          "-NoProfile",
+          "-Command",
+          `Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId)|$($_.ParentProcessId)|0|$($_.Name)" }`,
+        ],
+        { timeout: PROCESS_TIMEOUT_MS * 2 },
+      );
+      for (const line of stdout.split(/\r?\n/)) {
+        const parts = line.trim().split("|");
+        if (parts.length >= 4) {
+          const pid = parseInt(parts[0], 10);
+          if (!isNaN(pid)) {
+            tree.set(pid, {
+              ppid: parseInt(parts[1], 10) || 0,
+              cpuPercent: parseFloat(parts[2]) || 0,
+              comm: parts[3].trim(),
+            });
+          }
+        }
+      }
+    } catch {
+      // Fallback: empty tree
+    }
+    return tree;
+  }
+
+  // macOS/Linux: use ps
   try {
-    const { stdout } = await execPlatform("ps", ["-eo", "pid,ppid,%cpu,comm"], {
+    const { stdout } = await execFileAsync("ps", ["-eo", "pid,ppid,%cpu,comm"], {
       timeout: PROCESS_TIMEOUT_MS,
     });
-    const tree = new Map<number, ProcessTreeEntry>();
     for (const line of stdout.split("\n")) {
       const match = line.trim().match(/^(\d+)\s+(\d+)\s+([\d.,]+)\s+(.+)$/);
       if (match) {
@@ -76,19 +109,21 @@ export async function buildProcessTree(): Promise<Map<number, ProcessTreeEntry>>
         });
       }
     }
-    return tree;
   } catch {
-    return new Map();
+    // empty tree
   }
+  return tree;
 }
 
 /**
- * Extract PIDs from the process tree where comm is exactly "claude".
+ * Extract PIDs from the process tree where comm matches "claude".
+ * On Windows, matches "claude.exe"; on macOS/Linux, matches "claude".
  */
 export function findClaudePidsFromTree(processTree: Map<number, ProcessTreeEntry>): number[] {
   const pids: number[] = [];
   Array.from(processTree.entries()).forEach(([pid, entry]) => {
-    if (entry.comm === "claude") {
+    const comm = entry.comm.toLowerCase();
+    if (comm === "claude" || comm === "claude.exe") {
       pids.push(pid);
     }
   });
@@ -101,9 +136,9 @@ export function findClaudePidsFromTree(processTree: Map<number, ProcessTreeEntry
  */
 export async function getTtysForPids(pids: number[]): Promise<Map<number, string>> {
   const result = new Map<number, string>();
-  if (pids.length === 0) return result;
+  if (pids.length === 0 || isWindows) return result;
   try {
-    const { stdout } = await execPlatform("ps", ["-o", "pid=,tty=", "-p", pids.join(",")], {
+    const { stdout } = await execFileAsync("ps", ["-o", "pid=,tty=", "-p", pids.join(",")], {
       timeout: PROCESS_TIMEOUT_MS,
     });
     for (const line of stdout.trim().split("\n")) {
@@ -123,9 +158,13 @@ export async function getTtysForPids(pids: number[]): Promise<Map<number, string
 
 /**
  * Get the TTY for a single PID. Throws if no TTY found.
+ * On Windows, always throws (no TTY concept for native processes).
  */
 export async function getTtyForPid(pid: number): Promise<string> {
-  const { stdout } = await execPlatform("ps", ["-o", "tty=", "-p", String(pid)], {
+  if (isWindows) {
+    throw new Error(`No TTY on Windows for PID ${pid}`);
+  }
+  const { stdout } = await execFileAsync("ps", ["-o", "tty=", "-p", String(pid)], {
     timeout: PROCESS_TIMEOUT_MS,
   });
   const tty = stdout.trim();

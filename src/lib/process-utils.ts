@@ -1,8 +1,10 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
+import { readdir, stat, open } from "fs/promises";
+import { join } from "path";
 import type { ProcessTreeEntry } from "./terminal/types";
 import { PROCESS_TIMEOUT_MS } from "./constants";
-import { wslExecArgs } from "./platform";
+import { isWindows, resolveClaudeProjectsDir } from "./platform";
 
 const execFileAsync = promisify(execFile);
 
@@ -13,28 +15,18 @@ export interface ProcessInfo {
 }
 
 /**
- * Helper to run a command, automatically prefixing with `wsl --` on Windows.
- */
-function execPlatform(
-  command: string,
-  args: string[],
-  options: { timeout?: number } = {},
-): Promise<{ stdout: string; stderr: string }> {
-  const { command: cmd, args: cmdArgs } = wslExecArgs(command, args);
-  return execFileAsync(cmd, cmdArgs, { ...options, encoding: "utf-8" });
-}
-
-/**
- * Get working directories for multiple PIDs in a single `lsof` call.
- * Uses `-Fpn -d cwd` for parseable output filtered to cwd entries only.
- * Output format: p<pid>\nfcwd\nn<path> per process -- `f` lines are
- * intentionally skipped since we only need `p` (PID) and `n` (path).
+ * Get working directories for multiple PIDs in a single `lsof` call (macOS/Linux).
  */
 export async function getBatchWorkingDirectories(pids: number[]): Promise<Map<number, string>> {
   const result = new Map<number, string>();
   if (pids.length === 0) return result;
+
+  if (isWindows) {
+    return getWindowsCwds(pids);
+  }
+
   try {
-    const { stdout } = await execPlatform("lsof", ["-p", pids.join(","), "-Fpn", "-d", "cwd"], {
+    const { stdout } = await execFileAsync("lsof", ["-p", pids.join(","), "-Fpn", "-d", "cwd"], {
       timeout: PROCESS_TIMEOUT_MS,
     });
     let currentPid: number | null = null;
@@ -53,10 +45,81 @@ export async function getBatchWorkingDirectories(pids: number[]): Promise<Map<nu
 }
 
 /**
- * Build ProcessInfo for all given PIDs using the process tree + one lsof call.
- * The tree (from buildProcessTree) provides comm and %cpu; lsof provides cwds.
- * Since findClaudePidsFromTree already filters by `comm === "claude"`, the
- * Claude.app desktop process (comm "Claude" or "Electron") never reaches here.
+ * Get working directories for Windows processes by scanning JSONL files.
+ * Since Windows has no `lsof`, we reverse-map project directories and
+ * check recently modified JSONL files for CWD info.
+ */
+async function getWindowsCwds(pids: number[]): Promise<Map<number, string>> {
+  const result = new Map<number, string>();
+  if (pids.length === 0) return result;
+
+  const projectsDir = resolveClaudeProjectsDir();
+  const unmatched = new Set(pids);
+
+  try {
+    const projectDirs = await readdir(projectsDir);
+
+    for (const dir of projectDirs) {
+      if (unmatched.size === 0) break;
+
+      const dirPath = join(projectsDir, dir);
+      let dirStat;
+      try {
+        dirStat = await stat(dirPath);
+        if (!dirStat.isDirectory()) continue;
+      } catch {
+        continue;
+      }
+
+      // Reverse-map the escaped directory name to a working directory
+      // Windows: "C--Users-yegor" → "C:\Users\yegor" (replace first -- with :\, then - with \)
+      let workingDir: string;
+      const winMatch = dir.match(/^([A-Za-z])--(.*)$/);
+      if (winMatch) {
+        workingDir = `${winMatch[1]}:\\${winMatch[2].replace(/-/g, "\\")}`;
+      } else {
+        workingDir = dir.replace(/-/g, "/"); // Unix-style fallback
+      }
+
+      // Check if any JSONL in this dir was recently modified
+      let entries: string[];
+      try {
+        entries = (await readdir(dirPath)).filter((e) => e.endsWith(".jsonl"));
+      } catch {
+        continue;
+      }
+
+      // Find the most recently modified JSONL
+      let latestMtime = 0;
+      for (const jsonlFile of entries) {
+        try {
+          const fileStat = await stat(join(dirPath, jsonlFile));
+          if (fileStat.mtimeMs > latestMtime) {
+            latestMtime = fileStat.mtimeMs;
+          }
+        } catch {
+          continue;
+        }
+      }
+
+      // If modified within last 2 minutes, likely an active session
+      if (Date.now() - latestMtime < 2 * 60 * 1000) {
+        for (const pid of unmatched) {
+          result.set(pid, workingDir);
+          unmatched.delete(pid);
+          break; // One PID per active project dir
+        }
+      }
+    }
+  } catch {
+    // projects dir doesn't exist
+  }
+
+  return result;
+}
+
+/**
+ * Build ProcessInfo for all given PIDs using the process tree + cwd resolution.
  */
 export async function getAllProcessInfos(
   pids: number[],
@@ -69,7 +132,19 @@ export async function getAllProcessInfos(
   const results: ProcessInfo[] = [];
   for (const pid of pids) {
     const entry = processTree.get(pid);
-    if (!entry) continue;
+    if (!entry) {
+      // On Windows, the process tree might not contain native processes
+      // if they were found via PowerShell instead of ps
+      if (isWindows) {
+        results.push({
+          pid,
+          workingDirectory: cwds.get(pid) ?? null,
+          cpuPercent: 0,
+        });
+        continue;
+      }
+      continue;
+    }
 
     results.push({
       pid,
