@@ -62,7 +62,7 @@ export default function SessionDetailPage() {
         </div>
         <div className="flex items-center gap-3">
           <StatusBadge status={session.status} />
-          <QuickActions path={session.workingDirectory} pid={session.pid} targetScreen={targetScreen} />
+          <QuickActions path={session.workingDirectory} pid={session.pid} targetScreen={targetScreen} remote={session.remote} />
         </div>
       </div>
 

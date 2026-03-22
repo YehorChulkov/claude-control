@@ -40,6 +40,7 @@ export function QuickActions({
   targetScreen,
   status,
   prUrl,
+  remote,
   onCleanup,
 }: {
   path: string;
@@ -47,6 +48,7 @@ export function QuickActions({
   targetScreen?: number | null;
   status?: string;
   prUrl?: string | null;
+  remote?: string;
   onCleanup?: (e: React.MouseEvent) => void;
 }) {
   const [prSending, setPrSending] = useState(false);
@@ -64,6 +66,7 @@ export function QuickActions({
           path,
           pid,
           targetScreen: targetScreen ?? undefined,
+          remote: remote ?? undefined,
         }),
       });
     } catch (err) {

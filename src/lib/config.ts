@@ -6,6 +6,12 @@ import type { TerminalApp, TerminalOpenIn } from "./terminal/types";
 const CONFIG_DIR = join(homedir(), ".claude-control");
 const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 
+export interface RemoteConfig {
+  name: string;
+  host: string;
+  user: string;
+}
+
 export interface AppConfig {
   codeDirectories: string[];
   editor: string;
@@ -22,6 +28,7 @@ export interface AppConfig {
   createPrPrompt: string;
   defaultBaseBranch: string;
   showKeyboardHints: boolean;
+  remotes: RemoteConfig[];
 }
 
 export const DEFAULT_INITIAL_PROMPT =
@@ -101,6 +108,7 @@ const DEFAULT_CONFIG: AppConfig = {
   createPrPrompt: DEFAULT_CREATE_PR_PROMPT,
   defaultBaseBranch: "main",
   showKeyboardHints: true,
+  remotes: [{ name: "mac", host: "yehors-mac-mini.tailebd48b.ts.net", user: "yehorchulkov" }],
 };
 
 export async function loadConfig(): Promise<AppConfig> {

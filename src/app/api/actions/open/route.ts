@@ -13,6 +13,7 @@ import {
   sendKeystroke,
 } from "@/lib/terminal";
 import { isWindows, isMac } from "@/lib/platform";
+import { isRemotePid, getRemoteConfig } from "@/lib/remote-discovery";
 
 const execFileAsync = promisify(execFile);
 const execAsync = promisify(exec);
@@ -70,7 +71,7 @@ return "ok"
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { action, path, pid, targetScreen, message, url, keystroke } = body as {
+    const { action, path, pid, targetScreen, message, url, keystroke, remote } = body as {
       action: ActionType;
       path?: string;
       pid?: number;
@@ -78,6 +79,7 @@ export async function POST(request: Request) {
       message?: string;
       url?: string;
       keystroke?: string;
+      remote?: string;
     };
 
     if (!action) {
@@ -108,6 +110,25 @@ export async function POST(request: Request) {
         if (!pid) {
           return NextResponse.json({ error: "Missing pid for focus action" }, { status: 400 });
         }
+
+        // Remote session: open SSH in a new terminal tab
+        if (remote || isRemotePid(pid)) {
+          const remoteName = remote || "mac";
+          const remoteConfig = await getRemoteConfig(remoteName);
+          if (!remoteConfig) {
+            return NextResponse.json({ error: `Remote "${remoteName}" not found` }, { status: 404 });
+          }
+          const sshTarget = `${remoteConfig.user}@${remoteConfig.host}`;
+          if (isWindows) {
+            await execAsync(`wt.exe -w 0 new-tab ssh ${sshTarget}`, { timeout: 10000 });
+          } else {
+            // On macOS, open a new Terminal window with SSH
+            const script = `tell application "Terminal" to do script "ssh ${sshTarget}"`;
+            await execAsync(`osascript -e '${script}'`, { timeout: 5000 });
+          }
+          break;
+        }
+
         const [tree, panes, panesByPid] = await Promise.all([
           buildProcessTree(),
           detectAllTmuxPanes(),

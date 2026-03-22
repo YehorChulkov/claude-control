@@ -27,6 +27,8 @@ export interface ClaudeSession {
   hasPendingToolUse: boolean;
   jsonlPath: string | null;
   prUrl: string | null;
+  /** Which remote this session came from (undefined = local) */
+  remote?: string;
 }
 
 export interface GitSummary {

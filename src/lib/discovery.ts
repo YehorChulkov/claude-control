@@ -25,6 +25,7 @@ import { classifyStatus } from "./status-classifier";
 import { readAllHookMaps, type HookStatus } from "./hooks-reader";
 import { loadSessionMeta } from "./session-meta";
 import { SessionDetail } from "./types";
+import { discoverAllRemoteSessions } from "./remote-discovery";
 
 async function findLatestJsonl(projectDir: string, excludePaths?: Set<string>): Promise<string | null> {
   try {
@@ -160,11 +161,12 @@ async function buildSession(
 export async function discoverSessions(): Promise<ClaudeSession[]> {
   // Build process tree (covers both native + WSL on Windows)
   const nativeProjectsDir = getProjectsDir();
-  const [processTree, hookMaps, meta, wslProjectsDir] = await Promise.all([
+  const [processTree, hookMaps, meta, wslProjectsDir, remoteSessions] = await Promise.all([
     buildProcessTree(),
     readAllHookMaps(),
     loadSessionMeta(),
     isWindows ? resolveWslClaudeProjectsDir() : Promise.resolve(null),
+    discoverAllRemoteSessions(),
   ]);
   const { byPid: hookStatuses, bySessionId: hooksBySessionId } = hookMaps;
   const pids = findClaudePidsFromTree(processTree);
@@ -192,6 +194,9 @@ export async function discoverSessions(): Promise<ClaudeSession[]> {
   );
 
   const sessions = results.filter((s): s is ClaudeSession => s !== null);
+
+  // Merge remote sessions
+  sessions.push(...remoteSessions);
 
   // Merge user-provided title/description overrides
   for (const session of sessions) {

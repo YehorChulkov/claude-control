@@ -140,6 +140,7 @@ export async function PUT(request: Request) {
       createPrPrompt: body.createPrPrompt !== undefined ? body.createPrPrompt : current.createPrPrompt,
       defaultBaseBranch: body.defaultBaseBranch ?? current.defaultBaseBranch,
       showKeyboardHints: body.showKeyboardHints !== undefined ? body.showKeyboardHints : current.showKeyboardHints,
+      remotes: body.remotes ?? current.remotes,
     };
 
     await saveConfig(updated);

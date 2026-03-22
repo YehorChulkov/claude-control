@@ -196,6 +196,11 @@ export function SessionCard({
                     ? session.parentRepo.split("/").filter(Boolean).pop() || session.repoName
                     : session.repoName || "Unknown"}
                 </h3>
+                {session.remote && (
+                  <span className="shrink-0 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider rounded-sm bg-cyan-500/10 border border-cyan-500/20 text-cyan-400">
+                    {session.remote}
+                  </span>
+                )}
                 {session.isWorktree && (
                   <span className="shrink-0 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider rounded-sm bg-violet-500/10 border border-violet-500/20 text-violet-400">
                     worktree
@@ -295,6 +300,7 @@ export function SessionCard({
               targetScreen={targetScreen}
               status={displayStatus}
               prUrl={session.prUrl}
+              remote={session.remote}
               onCleanup={canCleanup ? handleCleanup : undefined}
             />
           )}
