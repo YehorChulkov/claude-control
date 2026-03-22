@@ -111,8 +111,15 @@ export async function focusSession(info: TerminalInfo): Promise<void> {
     await execPlatform("tmux", ["select-pane", "-t", info.tmux.paneId], { timeout: PROCESS_TIMEOUT_MS });
   }
 
-  // On Windows, tmux pane selection is all we can do (no window focus from WSL)
+  // On Windows, try to bring Windows Terminal to foreground via PowerShell
   if (isWindows) {
+    try {
+      await execFileAsync("powershell", ["-NoProfile", "-Command",
+        `(New-Object -ComObject WScript.Shell).AppActivate('Windows Terminal')`
+      ], { timeout: 5000 });
+    } catch {
+      // Best effort — window activation may fail
+    }
     return;
   }
 

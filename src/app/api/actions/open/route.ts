@@ -132,7 +132,8 @@ export async function POST(request: Request) {
       }
       case "finder":
         if (isWindows) {
-          await execAsync(`explorer.exe "${path}"`, { timeout: 10000 });
+          // explorer.exe returns exit code 1 even on success — ignore errors
+          await execAsync(`explorer.exe "${path}"`, { timeout: 10000 }).catch(() => {});
         } else {
           await execFileAsync("open", [path!]);
         }
