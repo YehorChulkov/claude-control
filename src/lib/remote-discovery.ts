@@ -97,9 +97,11 @@ async function discoverRemoteProcesses(remote: RemoteConfig): Promise<RemoteProc
     const match = line.match(/^\s*(\d+)\s+(\d+)\s+([\d.]+)\s+(.+)$/);
     if (!match) continue;
 
-    const comm = match[4].trim().toLowerCase();
-    // Look for claude processes (same logic as local detection)
-    if (comm.includes("claude") && !comm.includes("claude-control")) {
+    const comm = match[4].trim();
+    // Extract basename (comm can be full path like /Users/.../claude)
+    const basename = comm.includes("/") ? comm.split("/").pop()?.toLowerCase() || "" : comm.toLowerCase();
+    // Exact match only: "claude" or "claude.exe" — not bun plugins or helpers
+    if (basename === "claude" || basename === "claude.exe") {
       processes.push({
         pid: parseInt(match[1], 10),
         ppid: parseInt(match[2], 10),
