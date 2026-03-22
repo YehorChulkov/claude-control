@@ -15,6 +15,7 @@ interface TmuxSessionInfo {
   attached: boolean;
   panes: TmuxPaneDetail[];
   hasClaudeRunning: boolean;
+  remote?: string;
 }
 
 const fetcher = (url: string) =>
@@ -40,7 +41,7 @@ export function TmuxPanel() {
 
   const sessions = data?.sessions ?? [];
 
-  async function handleAction(action: "attach" | "kill", sessionName: string) {
+  async function handleAction(action: "attach" | "kill", sessionName: string, remote?: string) {
     if (action === "kill" && killConfirm !== sessionName) {
       setKillConfirm(sessionName);
       setTimeout(() => setKillConfirm((prev) => (prev === sessionName ? null : prev)), 4000);
@@ -54,7 +55,7 @@ export function TmuxPanel() {
       await fetch("/api/tmux/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, sessionName }),
+        body: JSON.stringify({ action, sessionName, ...(remote ? { remote } : {}) }),
       });
       if (action === "kill") {
         mutate();
@@ -118,6 +119,11 @@ export function TmuxPanel() {
                       <h3 className="font-semibold text-sm text-zinc-100 truncate">
                         {session.name}
                       </h3>
+                      {session.remote && (
+                        <span className="shrink-0 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider rounded-sm bg-cyan-500/10 border border-cyan-500/20 text-cyan-400">
+                          {session.remote}
+                        </span>
+                      )}
                       {session.hasClaudeRunning && (
                         <span className="shrink-0 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider rounded-sm bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
                           claude
@@ -172,7 +178,7 @@ export function TmuxPanel() {
                 {/* Actions */}
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={() => handleAction("attach", session.name)}
+                    onClick={() => handleAction("attach", session.name, session.remote)}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-100 bg-white/4 hover:bg-white/8 border border-white/7 hover:border-white/15 transition-colors"
                   >
                     <svg
@@ -200,7 +206,7 @@ export function TmuxPanel() {
                         Cancel
                       </button>
                       <button
-                        onClick={() => handleAction("kill", session.name)}
+                        onClick={() => handleAction("kill", session.name, session.remote)}
                         className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-red-400 hover:text-red-300 bg-red-500/8 hover:bg-red-500/18 border border-red-500/15 hover:border-red-500/30 transition-colors"
                       >
                         Confirm Kill
@@ -208,7 +214,7 @@ export function TmuxPanel() {
                     </div>
                   ) : (
                     <button
-                      onClick={() => handleAction("kill", session.name)}
+                      onClick={() => handleAction("kill", session.name, session.remote)}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-500 hover:text-red-400 bg-white/3 hover:bg-red-500/8 border border-white/5 hover:border-red-500/20 transition-colors"
                     >
                       <svg
