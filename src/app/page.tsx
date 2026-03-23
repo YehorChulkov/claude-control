@@ -15,6 +15,7 @@ import { KeyboardHints } from "@/components/KeyboardHints";
 import { SessionStatus } from "@/lib/types";
 import { flattenGroupedSessions } from "@/lib/group-sessions";
 import { TmuxPanel } from "@/components/TmuxPanel";
+import { AgentsPanel } from "@/components/AgentsPanel";
 import Link from "next/link";
 
 export default function Dashboard() {
@@ -296,6 +297,8 @@ export default function Dashboard() {
       )}
 
       <TmuxPanel />
+
+      <AgentsPanel />
 
       {sessions.length > 0 && showKeyboardHints && (
         <KeyboardHints
